@@ -28,20 +28,19 @@ fn main() {
 
     // 路径
     let pmhq_exe = exe_dir.join("bin/pmhq/pmhq.exe");
-    let llbot_node = exe_dir.join("bin/llbot/node.exe");
-    let llbot_js = exe_dir.join("bin/llbot/llbot.js");
+    let llbot_dir = exe_dir.join("bin/llbot");
 
     // 检查文件是否存在
     if !pmhq_exe.exists() {
         eprintln!("错误: 未找到 pmhq.exe: {}", pmhq_exe.display());
         wait_exit(1);
     }
-    if !llbot_node.exists() {
-        eprintln!("错误: 未找到 node.exe: {}", llbot_node.display());
+    if !llbot_dir.join("node.exe").exists() {
+        eprintln!("错误: 未找到 node.exe: {}", llbot_dir.join("node.exe").display());
         wait_exit(1);
     }
-    if !llbot_js.exists() {
-        eprintln!("错误: 未找到 llbot.js: {}", llbot_js.display());
+    if !llbot_dir.join("llbot.js").exists() {
+        eprintln!("错误: 未找到 llbot.js: {}", llbot_dir.join("llbot.js").display());
         wait_exit(1);
     }
 
@@ -55,19 +54,20 @@ fn main() {
     println!("LLBot CLI 启动器");
     println!("================");
     println!("pmhq: {}", pmhq_exe.display());
-    println!("node: {}", llbot_node.display());
-    println!("llbot.js: {}", llbot_js.display());
+    println!("llbot目录: {}", exe_dir.join("bin/llbot").display());
     println!("端口: {}", port);
     println!();
 
-    // 构建命令: pmhq.exe --port <port> --sub-cmd node.exe --enable-source-maps llbot.js -- --pmhq-port=<port>
+    // 构建命令: pmhq.exe --port <port> --sub-cmd-workdir <llbot_dir> --sub-cmd node.exe --enable-source-maps llbot.js -- --pmhq-port=<port>
     let mut cmd = Command::new(&pmhq_exe);
     cmd.arg("--port")
         .arg(port.to_string())
+        .arg("--sub-cmd-workdir")
+        .arg(&llbot_dir)
         .arg("--sub-cmd")
-        .arg(&llbot_node)
+        .arg("node.exe")
         .arg("--enable-source-maps")
-        .arg(&llbot_js)
+        .arg("llbot.js")
         .arg("--")
         .arg(format!("--pmhq-port={}", port));
 
@@ -77,11 +77,10 @@ fn main() {
         cmd.args(&args);
     }
 
-    println!("执行: {} --port {} --sub-cmd {} --enable-source-maps {} -- --pmhq-port={}", 
+    println!("执行: {} --port {} --sub-cmd-workdir {} --sub-cmd node.exe --enable-source-maps llbot.js -- --pmhq-port={}", 
         pmhq_exe.display(),
         port,
-        llbot_node.display(), 
-        llbot_js.display(),
+        llbot_dir.display(),
         port
     );
     println!();
