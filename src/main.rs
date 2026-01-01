@@ -13,8 +13,9 @@
 //!     ...
 
 use std::env;
+use std::fs;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DEFAULT_PORT: u16 = 13000;
@@ -25,6 +26,50 @@ fn main() {
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
+
+    // 检查当前目录是否存在 data 目录，如果存在则移动到 bin/llbot/
+    let data_dir = exe_dir.join("data");
+    let target_data_dir = exe_dir.join("bin/llbot/data");
+    if data_dir.exists() && data_dir.is_dir() {
+        println!("检测到 data 目录，正在移动到 bin/llbot/...");
+        // 如果目标已存在，先删除
+        if target_data_dir.exists() {
+            let _ = fs::remove_dir_all(&target_data_dir);
+        }
+        if let Err(_) = fs::rename(&data_dir, &target_data_dir) {
+            // rename 跨分区可能失败，回退到复制+删除
+            if let Err(e) = copy_dir_recursive(&data_dir, &target_data_dir) {
+                eprintln!("警告: 移动 data 目录失败: {}", e);
+            } else {
+                let _ = fs::remove_dir_all(&data_dir);
+                println!("data 目录移动完成");
+            }
+        } else {
+            println!("data 目录移动完成");
+        }
+    }
+
+    // 检查当前目录是否存在 pmhq_config.json，如果存在则移动到 bin/pmhq/
+    let pmhq_config = exe_dir.join("pmhq_config.json");
+    let target_pmhq_config = exe_dir.join("bin/pmhq/pmhq_config.json");
+    if pmhq_config.exists() && pmhq_config.is_file() {
+        println!("检测到 pmhq_config.json，正在移动到 bin/pmhq/...");
+        // 如果目标已存在，先删除
+        if target_pmhq_config.exists() {
+            let _ = fs::remove_file(&target_pmhq_config);
+        }
+        if let Err(_) = fs::rename(&pmhq_config, &target_pmhq_config) {
+            // rename 跨分区可能失败，回退到复制+删除
+            if let Err(e) = fs::copy(&pmhq_config, &target_pmhq_config) {
+                eprintln!("警告: 移动 pmhq_config.json 失败: {}", e);
+            } else {
+                let _ = fs::remove_file(&pmhq_config);
+                println!("pmhq_config.json 移动完成");
+            }
+        } else {
+            println!("pmhq_config.json 移动完成");
+        }
+    }
 
     // 路径
     let pmhq_exe = exe_dir.join("bin/pmhq/pmhq.exe");
@@ -114,4 +159,24 @@ fn wait_exit(code: i32) -> ! {
     let mut input = String::new();
     let _ = std::io::stdin().read_line(&mut input);
     std::process::exit(code);
+}
+
+/// 递归复制目录
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+    
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
 }
