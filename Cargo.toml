@@ -1,0 +1,20 @@
+[package]
+name = "llbot-cli"
+version = "0.1.0"
+edition = "2021"
+description = "LLBot CLI launcher"
+
+[[bin]]
+name = "llbot"
+path = "src/main.rs"
+
+[dependencies]
+
+[build-dependencies]
+winres = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
