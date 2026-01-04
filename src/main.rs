@@ -19,17 +19,14 @@ const DEFAULT_PORT: u16 = 13000;
 const PORT_RANGE_END: u16 = 14000;
 
 fn should_show_terminal_qrcode(exe_dir: &Path, args: &[String]) -> bool {
-    // 非 Windows 平台始终显示终端二维码
     if cfg!(not(target_os = "windows")) {
         return true;
     }
     
-    // 检查命令行参数
     if args.iter().any(|a| a == "--headless") {
         return true;
     }
     
-    // 检查配置文件
     let config_path = exe_dir.join("bin/pmhq/pmhq_config.json");
     if let Ok(content) = fs::read_to_string(&config_path) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -39,6 +36,14 @@ fn should_show_terminal_qrcode(exe_dir: &Path, args: &[String]) -> bool {
     false
 }
 
+fn get_exe_name(base: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{}.exe", base)
+    } else {
+        base.to_string()
+    }
+}
+
 fn main() {
     let exe_dir = env::current_exe()
         .ok()
@@ -46,7 +51,7 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("."));
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let pmhq_exe = exe_dir.join("bin/pmhq/pmhq.exe");
+    let pmhq_exe = exe_dir.join(format!("bin/pmhq/{}", get_exe_name("pmhq")));
 
     // --help 或 --version 直接转发给 pmhq
     if args.iter().any(|a| a == "--help" || a == "-h" || a == "--version") {
@@ -54,7 +59,7 @@ fn main() {
             let status = Command::new(&pmhq_exe).args(&args).status();
             std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
         } else {
-            eprintln!("错误: 未找到 pmhq.exe: {}", pmhq_exe.display());
+            eprintln!("错误: 未找到 pmhq: {}", pmhq_exe.display());
             std::process::exit(1);
         }
     }
@@ -62,15 +67,17 @@ fn main() {
     migrate_old_files(&exe_dir);
 
     let llbot_dir = exe_dir.join("bin/llbot");
+    let node_exe = get_exe_name("node");
 
     if !pmhq_exe.exists() {
-        eprintln!("错误: 未找到 pmhq.exe: {}", pmhq_exe.display());
+        eprintln!("错误: 未找到 pmhq: {}", pmhq_exe.display());
         wait_exit(1);
     }
-    if !llbot_dir.join("node.exe").exists() {
+    if !llbot_dir.join(&node_exe).exists() {
         eprintln!(
-            "错误: 未找到 node.exe: {}",
-            llbot_dir.join("node.exe").display()
+            "错误: 未找到 {}: {}",
+            node_exe,
+            llbot_dir.join(&node_exe).display()
         );
         wait_exit(1);
     }
@@ -102,7 +109,7 @@ fn main() {
     cmd.arg("--sub-cmd-workdir")
         .arg(&llbot_dir)
         .arg("--sub-cmd")
-        .arg("node.exe")
+        .arg(&node_exe)
         .arg("--enable-source-maps")
         .arg("llbot.js")
         .arg("--")

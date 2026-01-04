@@ -1,5 +1,6 @@
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+    #[cfg(target_os = "windows")]
+    {
         // 静态链接 VC 运行时
         static_vcruntime::metabuild();
         

@@ -16,10 +16,8 @@ qrcode = "0.14"
 base64 = "0.22"
 ctrlc = "3"
 
-[build-dependencies]
-winres = "0.1"
-
 [target.'cfg(target_os = "windows")'.build-dependencies]
+winres = "0.1"
 static_vcruntime = "2.0"
 
 [profile.release]
