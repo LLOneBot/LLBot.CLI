@@ -52,7 +52,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: build-${{ matrix.target }}
           path: ${{ matrix.artifact }}
 
   release:
@@ -63,20 +63,20 @@ jobs:
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
       
       - name: Download PMHQ releases
         run: |
           PMHQ_RELEASE=$(curl -s https://api.github.com/repos/linyuchen/PMHQ.Rust/releases/latest)
           echo "$PMHQ_RELEASE" | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | while read url; do
-            echo "Downloading: $url"
             curl -L -O "$url"
           done
       
       - name: Prepare files
         run: |
-          mv llbot-win-x64.exe/llbot-win-x64.exe .
-          mv llbot-linux-x64/llbot-linux-x64 .
-          mv llbot-linux-arm64/llbot-linux-arm64 .
+          mv artifacts/* .
           chmod +x llbot-linux-x64 llbot-linux-arm64
       
       - name: Create Release Draft
