@@ -2,6 +2,7 @@
 
 mod pmhq_client;
 mod qrcode_display;
+mod updater;
 
 use pmhq_client::PMHQClient;
 use qrcode_display::{print_qrcode_terminal, save_qrcode_image};
@@ -53,8 +54,8 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let pmhq_exe = exe_dir.join(format!("bin/pmhq/{}", get_exe_name("pmhq")));
 
-    // --help 或 --version 直接转发给 pmhq
-    if args.iter().any(|a| a == "--help" || a == "-h" || a == "--version") {
+    // --help 直接转发给 pmhq
+    if args.iter().any(|a| a == "--help" || a == "-h") {
         if pmhq_exe.exists() {
             let status = Command::new(&pmhq_exe).args(&args).status();
             std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
@@ -62,6 +63,23 @@ fn main() {
             eprintln!("错误: 未找到 pmhq: {}", pmhq_exe.display());
             std::process::exit(1);
         }
+    }
+
+    // --version 先输出 CLI 版本，再转发给 pmhq
+    if args.iter().any(|a| a == "--version" || a == "-v") {
+        println!("llbot-cli {}", env!("CARGO_PKG_VERSION"));
+        if pmhq_exe.exists() {
+            let status = Command::new(&pmhq_exe).args(&args).status();
+            std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
+        } else {
+            std::process::exit(0);
+        }
+    }
+
+    // --update 检查并执行更新
+    if args.iter().any(|a| a == "--update") {
+        updater::run_update(&exe_dir);
+        wait_exit(0);
     }
 
     migrate_old_files(&exe_dir);

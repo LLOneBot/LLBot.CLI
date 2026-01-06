@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '版本号 (例如: v1.0.0)'
+        required: true
+        type: string
 
 jobs:
   build:
@@ -13,16 +18,16 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: llbot-win-x64.exe
-            binary: llbot.exe
+            artifact: llbot.exe
+            npm_pkg: llbot-cli-win-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: llbot-linux-x64
-            binary: llbot
+            artifact: llbot
+            npm_pkg: llbot-cli-linux-x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact: llbot-linux-arm64
-            binary: llbot
+            artifact: llbot
+            npm_pkg: llbot-cli-linux-arm64
     
     runs-on: ${{ matrix.os }}
     
@@ -45,49 +50,85 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       
-      - name: Rename artifact
+      - name: Prepare artifact
         shell: bash
-        run: mv target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} dist/
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.target }}
-          path: ${{ matrix.artifact }}
+          name: ${{ matrix.npm_pkg }}
+          path: dist/${{ matrix.artifact }}
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+      id-token: write
     
     steps:
-      - name: Download artifacts
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
-      
-      - name: Download PMHQ releases
+
+      - name: Prepare release files
         run: |
-          PMHQ_RELEASE=$(curl -s https://api.github.com/repos/linyuchen/PMHQ.Rust/releases/latest)
-          echo "$PMHQ_RELEASE" | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | while read url; do
-            curl -L -O "$url"
-          done
-      
-      - name: Prepare files
-        run: |
-          mv artifacts/* .
-          chmod +x llbot-linux-x64 llbot-linux-arm64
-      
-      - name: Create Release Draft
-        uses: softprops/action-gh-release@v1
+          mkdir -p release
+          cp artifacts/llbot-cli-win-x64/llbot.exe release/llbot-win-x64.exe
+          cp artifacts/llbot-cli-linux-x64/llbot release/llbot-linux-x64
+          cp artifacts/llbot-cli-linux-arm64/llbot release/llbot-linux-arm64
+          chmod +x release/llbot-linux-x64 release/llbot-linux-arm64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          files: |
-            llbot-win-x64.exe
-            llbot-linux-x64
-            llbot-linux-arm64
-            *.zip
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: LLBot CLI ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
+          draft: true
+          files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        if: github.event_name == 'push'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish npm packages
+        if: github.event_name == 'push'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          
+          # win-x64
+          mkdir -p package
+          cp artifacts/llbot-cli-win-x64/llbot.exe package/
+          echo '{"name":"llbot-cli-win-x64","version":"'$VERSION'","description":"LLBot CLI for Windows x64"}' > package/package.json
+          tar -czf llbot-cli-win-x64.tgz package
+          npm publish llbot-cli-win-x64.tgz --provenance --access public
+          rm -rf package
+          
+          # linux-x64
+          mkdir -p package
+          cp artifacts/llbot-cli-linux-x64/llbot package/
+          echo '{"name":"llbot-cli-linux-x64","version":"'$VERSION'","description":"LLBot CLI for Linux x64"}' > package/package.json
+          tar -czf llbot-cli-linux-x64.tgz package
+          npm publish llbot-cli-linux-x64.tgz --provenance --access public
+          rm -rf package
+          
+          # linux-arm64
+          mkdir -p package
+          cp artifacts/llbot-cli-linux-arm64/llbot package/
+          echo '{"name":"llbot-cli-linux-arm64","version":"'$VERSION'","description":"LLBot CLI for Linux arm64"}' > package/package.json
+          tar -czf llbot-cli-linux-arm64.tgz package
+          npm publish llbot-cli-linux-arm64.tgz --provenance --access public
