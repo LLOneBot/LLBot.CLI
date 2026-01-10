@@ -33,6 +33,7 @@ bin/
 | `--headless` | 无头模式（强制终端显示二维码） |
 | `--qq-console` | 启用 QQ 控制台日志 |
 | `--debug` | 调试模式 |
+| `--update` | 检查并执行更新 |
 | `--help, -h` | 显示帮助信息 |
 | `--version, -v` | 显示版本信息 |
 
@@ -50,6 +51,9 @@ bin/
 
 # 无头模式
 ./llbot --headless
+
+# 检查更新
+./llbot --update
 ```
 
 ## 支持平台
