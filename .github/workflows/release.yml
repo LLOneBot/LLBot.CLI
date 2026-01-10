@@ -103,6 +103,10 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Update npm
+        if: github.event_name == 'push'
+        run: npm install -g npm@latest
+
       - name: Publish npm packages
         if: github.event_name == 'push'
         env:
@@ -110,10 +114,12 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           
+          REPO='{"type":"git","url":"https://github.com/LLOneBot/LuckyLillia.CLI"}'
+          
           # win-x64
           mkdir -p package
           cp artifacts/llbot-cli-win-x64/llbot.exe package/
-          echo '{"name":"llbot-cli-win-x64","version":"'$VERSION'","description":"LLBot CLI for Windows x64"}' > package/package.json
+          echo '{"name":"llbot-cli-win-x64","version":"'$VERSION'","description":"LLBot CLI for Windows x64","repository":'"$REPO"'}' > package/package.json
           tar -czf llbot-cli-win-x64.tgz package
           npm publish llbot-cli-win-x64.tgz --provenance --access public
           rm -rf package
@@ -121,7 +127,7 @@ jobs:
           # linux-x64
           mkdir -p package
           cp artifacts/llbot-cli-linux-x64/llbot package/
-          echo '{"name":"llbot-cli-linux-x64","version":"'$VERSION'","description":"LLBot CLI for Linux x64"}' > package/package.json
+          echo '{"name":"llbot-cli-linux-x64","version":"'$VERSION'","description":"LLBot CLI for Linux x64","repository":'"$REPO"'}' > package/package.json
           tar -czf llbot-cli-linux-x64.tgz package
           npm publish llbot-cli-linux-x64.tgz --provenance --access public
           rm -rf package
@@ -129,6 +135,6 @@ jobs:
           # linux-arm64
           mkdir -p package
           cp artifacts/llbot-cli-linux-arm64/llbot package/
-          echo '{"name":"llbot-cli-linux-arm64","version":"'$VERSION'","description":"LLBot CLI for Linux arm64"}' > package/package.json
+          echo '{"name":"llbot-cli-linux-arm64","version":"'$VERSION'","description":"LLBot CLI for Linux arm64","repository":'"$REPO"'}' > package/package.json
           tar -czf llbot-cli-linux-arm64.tgz package
           npm publish llbot-cli-linux-arm64.tgz --provenance --access public
