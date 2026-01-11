@@ -7,7 +7,8 @@ mod updater;
 use pmhq_client::PMHQClient;
 use qrcode_display::{print_qrcode_terminal, save_qrcode_image};
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,6 +19,7 @@ use std::time::Duration;
 
 const DEFAULT_PORT: u16 = 13000;
 const PORT_RANGE_END: u16 = 14000;
+const QQ_DOWNLOAD_URL: &str = "https://dldir1v6.qq.com/qqfile/qq/QQNT/c50d6326/QQ9.9.22.40768_x64.exe";
 
 fn should_show_terminal_qrcode(exe_dir: &Path, args: &[String]) -> bool {
     if cfg!(not(target_os = "windows")) {
@@ -80,6 +82,41 @@ fn main() {
     if args.iter().any(|a| a == "--update") {
         updater::run_update(&exe_dir);
         wait_exit(0);
+    }
+
+    // 检查 QQ 路径
+    if cfg!(target_os = "windows") {
+        let qq_path_arg = args.iter()
+            .find(|a| a.starts_with("--qq-path="))
+            .map(|a| a.trim_start_matches("--qq-path=").to_string());
+        
+        let qq_path_arg_invalid = qq_path_arg.as_ref()
+            .map(|p| !Path::new(p).exists())
+            .unwrap_or(false);
+        
+        if qq_path_arg_invalid {
+            eprintln!("错误: 指定的 QQ 路径不存在: {}", qq_path_arg.as_ref().unwrap());
+        }
+        
+        let qq_path = if qq_path_arg_invalid { None } else { qq_path_arg.or_else(get_qq_path_from_registry) };
+        
+        if qq_path.is_none() || !qq_path.as_ref().map(|p| Path::new(p).exists()).unwrap_or(false) {
+            println!("未找到 QQ，是否下载并安装？(y/n)");
+            let mut input = String::new();
+            if std::io::stdin().read_line(&mut input).is_ok() {
+                if input.trim().eq_ignore_ascii_case("y") {
+                    if !download_and_install_qq() {
+                        eprintln!("QQ 下载安装失败");
+                        wait_exit(1);
+                    }
+                    println!("QQ 安装完成，请重新运行程序");
+                    wait_exit(0);
+                } else {
+                    eprintln!("错误: 未找到 QQ，请安装 QQ 或使用 --qq-path 参数指定路径");
+                    wait_exit(1);
+                }
+            }
+        }
     }
 
     migrate_old_files(&exe_dir);
@@ -332,10 +369,119 @@ fn find_available_port(start: u16, end: u16) -> Option<u16> {
 }
 
 fn wait_exit(code: i32) -> ! {
-    println!("\n按 Enter 键退出...");
-    let mut input = String::new();
-    let _ = std::io::stdin().read_line(&mut input);
+    println!("\n按任意键退出...");
+    let _ = std::io::stdin().read_line(&mut String::new());
     std::process::exit(code);
+}
+
+#[cfg(target_os = "windows")]
+fn get_qq_path_from_registry() -> Option<String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let key = hklm
+        .open_subkey(r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\QQ")
+        .ok()?;
+
+    let uninstall_path: String = key.get_value("UninstallString").ok()?;
+    let uninstall_path = uninstall_path.trim_matches('"');
+
+    let qq_dir = Path::new(uninstall_path).parent()?;
+    let qq_exe = qq_dir.join("QQ.exe");
+
+    if qq_exe.exists() {
+        Some(qq_exe.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_qq_path_from_registry() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn download_and_install_qq() -> bool {
+    println!("正在下载 QQ...");
+
+    let temp_dir = env::temp_dir();
+    let temp_file = temp_dir.join("QQ_Setup.exe");
+
+    match ureq::get(QQ_DOWNLOAD_URL)
+        .timeout(std::time::Duration::from_secs(300))
+        .call()
+    {
+        Ok(resp) => {
+            let total_size = resp
+                .header("Content-Length")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            let mut file = match File::create(&temp_file) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("创建临时文件失败: {}", e);
+                    return false;
+                }
+            };
+
+            let mut reader = resp.into_reader();
+            let mut buffer = [0u8; 65536];
+            let mut downloaded: u64 = 0;
+
+            loop {
+                match std::io::Read::read(&mut reader, &mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if file.write_all(&buffer[..n]).is_err() {
+                            eprintln!("写入文件失败");
+                            return false;
+                        }
+                        downloaded += n as u64;
+                        if total_size > 0 {
+                            print!(
+                                "\r下载进度: {:.1} MB / {:.1} MB ({:.0}%)",
+                                downloaded as f64 / 1024.0 / 1024.0,
+                                total_size as f64 / 1024.0 / 1024.0,
+                                downloaded as f64 / total_size as f64 * 100.0
+                            );
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("\n下载失败: {}", e);
+                        return false;
+                    }
+                }
+            }
+            println!();
+
+            println!("正在安装 QQ（静默安装）...");
+            match Command::new(&temp_file).arg("/S").status() {
+                Ok(status) => {
+                    let _ = fs::remove_file(&temp_file);
+                    status.success()
+                }
+                Err(e) => {
+                    eprintln!("启动安装程序失败: {}", e);
+                    let _ = fs::remove_file(&temp_file);
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("下载失败: {}", e);
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn download_and_install_qq() -> bool {
+    eprintln!("QQ 自动安装仅支持 Windows");
+    false
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
