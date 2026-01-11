@@ -20,11 +20,11 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: llbot.exe
             npm_pkg: llbot-cli-win-x64
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: llbot
             npm_pkg: llbot-cli-linux-x64
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             artifact: llbot
             npm_pkg: llbot-cli-linux-arm64
