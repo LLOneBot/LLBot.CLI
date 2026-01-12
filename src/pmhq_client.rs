@@ -8,7 +8,6 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct PMHQClient {
-    port: u16,
     base_url: String,
     timeout: Duration,
 }
@@ -16,7 +15,6 @@ pub struct PMHQClient {
 #[derive(Debug, Clone)]
 pub struct SelfInfo {
     pub uin: String,
-    pub uid: String,
     pub nickname: String,
 }
 
@@ -47,7 +45,6 @@ struct SSEData {
 impl PMHQClient {
     pub fn new(port: u16) -> Self {
         Self {
-            port,
             base_url: format!("http://127.0.0.1:{}", port),
             timeout: Duration::from_secs(5),
         }
@@ -117,12 +114,6 @@ impl PMHQClient {
             })
             .unwrap_or_default();
 
-        let uid = result
-            .get("uid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
         let nickname = result
             .get("nickName")
             .or_else(|| result.get("nickname"))
@@ -134,16 +125,7 @@ impl PMHQClient {
             return Err("未获取到 QQ 号".to_string());
         }
 
-        Ok(SelfInfo { uin, uid, nickname })
-    }
-
-    pub fn get_qq_pid(&self) -> Result<u32, String> {
-        let result = self.call("getProcessInfo")?;
-        result
-            .get("pid")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as u32)
-            .ok_or_else(|| "未获取到 QQ PID".to_string())
+        Ok(SelfInfo { uin, nickname })
     }
 
     pub fn request_qrcode(&self) -> Result<(), String> {
