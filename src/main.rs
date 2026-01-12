@@ -4,6 +4,7 @@ mod pmhq_client;
 mod qrcode_display;
 mod updater;
 
+use command_group::{CommandGroup, GroupChild};
 use pmhq_client::PMHQClient;
 use qrcode_display::{print_qrcode_terminal, save_qrcode_image};
 use std::env;
@@ -13,7 +14,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -170,11 +171,11 @@ fn main() {
         .arg("--")
         .arg(format!("--pmhq-port={}", port));
 
-    let mut child = match cmd
+    let mut child: GroupChild = match cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .group_spawn()
     {
         Ok(child) => child,
         Err(e) => {
@@ -183,45 +184,39 @@ fn main() {
         }
     };
 
-    let child_id = child.id();
-    let qq_pid_cache = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let qq_pid_for_cleanup = qq_pid_cache.clone();
+    let child_arc: Arc<Mutex<Option<GroupChild>>> = Arc::new(Mutex::new(None));
+    let child_for_handler = child_arc.clone();
     
     ctrlc::set_handler(move || {
-        let cached_pid = qq_pid_for_cleanup.load(Ordering::Relaxed);
-        cleanup_and_exit(child_id, if cached_pid > 0 { Some(cached_pid) } else { None });
+        if let Ok(mut guard) = child_for_handler.lock() {
+            if let Some(ref mut c) = *guard {
+                let _ = c.kill();
+            }
+        }
+        std::process::exit(0);
     })
     .ok();
 
-    // 读取 pmhq stdout，解析 QQ PID
-    let qq_pid_from_stdout = qq_pid_cache.clone();
-    if let Some(stdout) = child.stdout.take() {
+    let stdout = child.inner().stdout.take();
+    let stderr = child.inner().stderr.take();
+
+    // 把 child 移入 Arc，供 ctrlc handler 使用
+    *child_arc.lock().unwrap() = Some(child);
+    let child_for_wait = child_arc.clone();
+
+    if let Some(stdout) = stdout {
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 if let Ok(line) = line {
                     println!("{}", line);
-                    // 解析 "QQ 进程 PID: 12345" 或 "QQ进程PID: 12345"
-                    if line.contains("PID:") && line.contains("QQ") {
-                        if let Some(pos) = line.rfind("PID:") {
-                            let after_pid = &line[pos + 4..];
-                            let pid_str: String = after_pid.chars()
-                                .skip_while(|c| c.is_whitespace())
-                                .take_while(|c| c.is_ascii_digit())
-                                .collect();
-                            if let Ok(pid) = pid_str.parse::<u32>() {
-                                qq_pid_from_stdout.store(pid, Ordering::Relaxed);
-                            }
-                        }
-                    }
                 }
             }
         });
     }
 
-    // 读取 pmhq stderr
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = stderr {
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stderr);
@@ -239,14 +234,27 @@ fn main() {
 
     start_login_listener(port, logged_in.clone(), qrcode_path, show_terminal_qr);
 
-    match child.wait() {
-        Ok(status) => {
-            if !status.success() {
-                eprintln!("pmhq 退出，状态码: {:?}", status.code());
+    // 等待子进程结束
+    loop {
+        thread::sleep(Duration::from_millis(100));
+        if let Ok(mut guard) = child_for_wait.lock() {
+            if let Some(ref mut c) = *guard {
+                match c.try_wait() {
+                    Ok(Some(status)) => {
+                        if !status.success() {
+                            eprintln!("pmhq 退出，状态码: {:?}", status.code());
+                        }
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!("等待 pmhq 失败: {}", e);
+                        break;
+                    }
+                }
+            } else {
+                break;
             }
-        }
-        Err(e) => {
-            eprintln!("等待 pmhq 失败: {}", e);
         }
     }
 }
@@ -501,46 +509,4 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn kill_process_tree(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-#[cfg(not(target_os = "windows"))]
-fn kill_process_tree(pid: u32) {
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{}", pid)])
-        .status();
-}
-
-fn cleanup_and_exit(pmhq_pid: u32, qq_pid: Option<u32>) {
-    // 先杀 QQ，再杀 pmhq（因为 taskkill /T 会终止整个进程树）
-    if let Some(pid) = qq_pid {
-        kill_process(pid);
-    }
-    
-    kill_process_tree(pmhq_pid);
-    std::process::exit(0);
-}
-
-#[cfg(target_os = "windows")]
-fn kill_process(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/PID", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-#[cfg(not(target_os = "windows"))]
-fn kill_process(pid: u32) {
-    let _ = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status();
 }

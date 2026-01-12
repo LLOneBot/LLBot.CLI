@@ -1,6 +1,6 @@
 [package]
 name = "llbot-cli"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 description = "LLBot CLI launcher"
 
@@ -15,6 +15,7 @@ serde_json = "1"
 qrcode = "0.14"
 base64 = "0.22"
 ctrlc = "3"
+command-group = "5"
 flate2 = "1"
 tar = "0.4"
 
