@@ -24,7 +24,7 @@ bin/
 
 ## 命令行参数
 
-所有参数会透传给 PMHQ：
+所有参数会透传给 PMHQ，所有参数都是可选的
 
 | 参数 | 说明 |
 |------|------|
@@ -33,6 +33,10 @@ bin/
 | `--headless` | 无头模式（强制终端显示二维码） |
 | `--qq-console` | 启用 QQ 控制台日志 |
 | `--debug` | 调试模式 |
+| `--debug-pb[=true/false]` | 显示 send/recv Protobuf 日志 |
+| `--work-dir=<path>` | 工作目录|
+| `--sub-cmd <cmd...>` | QQ 启动后执行的子命令（必须放在最后） |
+| `--sub-cmd-workdir=<path>` | 子命令工作目录（默认使用 --work-dir） |
 | `--update` | 检查并执行更新 |
 | `--help, -h` | 显示帮助信息 |
 | `--version, -v` | 显示版本信息 |
