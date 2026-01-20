@@ -124,18 +124,33 @@ fn main() {
 
     let llbot_dir = exe_dir.join("bin/llbot");
     let node_exe = get_exe_name("node");
+    let node_path = llbot_dir.join(&node_exe);
 
     if !pmhq_exe.exists() {
         eprintln!("错误: 未找到 pmhq: {}", pmhq_exe.display());
         wait_exit(1);
     }
-    if !llbot_dir.join(&node_exe).exists() {
+    if !node_path.exists() {
         eprintln!(
             "错误: 未找到 {}: {}",
             node_exe,
-            llbot_dir.join(&node_exe).display()
+            node_path.display()
         );
         wait_exit(1);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(&node_path) {
+            let mut perms = metadata.permissions();
+            if perms.mode() & 0o111 == 0 {
+                perms.set_mode(perms.mode() | 0o755);
+                if let Err(e) = fs::set_permissions(&node_path, perms) {
+                    eprintln!("警告: 设置 node 执行权限失败: {}", e);
+                }
+            }
+        }
     }
     if !llbot_dir.join("llbot.js").exists() {
         eprintln!(
@@ -165,7 +180,7 @@ fn main() {
     cmd.arg("--sub-cmd-workdir")
         .arg(&llbot_dir)
         .arg("--sub-cmd")
-        .arg(&node_exe)
+        .arg(&node_path)
         .arg("--enable-source-maps")
         .arg("llbot.js")
         .arg("--")
@@ -208,9 +223,11 @@ fn main() {
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stdout);
+            let mut out = std::io::stdout().lock();
             for line in reader.lines() {
                 if let Ok(line) = line {
-                    println!("{}", line);
+                    let _ = writeln!(out, "{}", line);
+                    let _ = out.flush();
                 }
             }
         });
@@ -220,9 +237,11 @@ fn main() {
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stderr);
+            let mut err = std::io::stderr().lock();
             for line in reader.lines() {
                 if let Ok(line) = line {
-                    eprintln!("{}", line);
+                    let _ = writeln!(err, "{}", line);
+                    let _ = err.flush();
                 }
             }
         });
