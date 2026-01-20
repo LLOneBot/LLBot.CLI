@@ -48,6 +48,44 @@ fn get_exe_name(base: &str) -> String {
     }
 }
 
+fn find_pmhq_exe(exe_dir: &Path) -> Option<PathBuf> {
+    let pmhq_dir = exe_dir.join("bin/pmhq");
+    
+    let platform_arch = if cfg!(target_os = "windows") {
+        "win-x64"
+    } else if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "x86_64") {
+            "linux-x64"
+        } else if cfg!(target_arch = "aarch64") {
+            "linux-arm64"
+        } else {
+            ""
+        }
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            "macos-arm64"
+        } else {
+            "macos-x64"
+        }
+    } else {
+        ""
+    };
+    
+    if !platform_arch.is_empty() {
+        let arch_specific = pmhq_dir.join(get_exe_name(&format!("pmhq-{}", platform_arch)));
+        if arch_specific.exists() {
+            return Some(arch_specific);
+        }
+    }
+    
+    let generic = pmhq_dir.join(get_exe_name("pmhq"));
+    if generic.exists() {
+        return Some(generic);
+    }
+    
+    None
+}
+
 fn main() {
     let exe_dir = env::current_exe()
         .ok()
@@ -55,28 +93,26 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("."));
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let pmhq_exe = exe_dir.join(format!("bin/pmhq/{}", get_exe_name("pmhq")));
+    let pmhq_exe = match find_pmhq_exe(&exe_dir) {
+        Some(path) => path,
+        None => {
+            eprintln!("错误: 未找到 pmhq 可执行文件");
+            eprintln!("请确保 bin/pmhq/ 目录下存在 pmhq 或 pmhq-<platform>-<arch> 文件");
+            wait_exit(1);
+        }
+    };
 
     // --help 直接转发给 pmhq
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        if pmhq_exe.exists() {
-            let status = Command::new(&pmhq_exe).args(&args).status();
-            std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
-        } else {
-            eprintln!("错误: 未找到 pmhq: {}", pmhq_exe.display());
-            std::process::exit(1);
-        }
+        let status = Command::new(&pmhq_exe).args(&args).status();
+        std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
     }
 
     // --version 先输出 CLI 版本，再转发给 pmhq
     if args.iter().any(|a| a == "--version" || a == "-v") {
         println!("llbot-cli {}", env!("CARGO_PKG_VERSION"));
-        if pmhq_exe.exists() {
-            let status = Command::new(&pmhq_exe).args(&args).status();
-            std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
-        } else {
-            std::process::exit(0);
-        }
+        let status = Command::new(&pmhq_exe).args(&args).status();
+        std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
     }
 
     // --update 检查并执行更新
@@ -126,10 +162,6 @@ fn main() {
     let node_exe = get_exe_name("node");
     let node_path = llbot_dir.join(&node_exe);
 
-    if !pmhq_exe.exists() {
-        eprintln!("错误: 未找到 pmhq: {}", pmhq_exe.display());
-        wait_exit(1);
-    }
     if !node_path.exists() {
         eprintln!(
             "错误: 未找到 {}: {}",
