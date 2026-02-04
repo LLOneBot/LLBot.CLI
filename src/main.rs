@@ -231,6 +231,11 @@ fn main() {
         }
     };
 
+    #[cfg(target_os = "windows")]
+    if let Err(e) = assign_to_job_object(&mut child) {
+        eprintln!("警告: 无法设置进程保护: {}", e);
+    }
+
     let child_arc: Arc<Mutex<Option<GroupChild>>> = Arc::new(Mutex::new(None));
     let child_for_handler = child_arc.clone();
     
@@ -560,4 +565,44 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn assign_to_job_object(child: &mut GroupChild) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::jobapi2::*;
+    use winapi::um::winnt::*;
+
+    unsafe {
+        let job = CreateJobObjectW(ptr::null_mut(), ptr::null());
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        let result = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &mut info as *mut _ as *mut _,
+            std::mem::size_of_val(&info) as u32,
+        );
+
+        if result == 0 {
+            CloseHandle(job);
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let handle = child.inner().as_raw_handle() as *mut winapi::ctypes::c_void;
+        if AssignProcessToJobObject(job, handle) == 0 {
+            CloseHandle(job);
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let _ = job;
+        Ok(())
+    }
 }

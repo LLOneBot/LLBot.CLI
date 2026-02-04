@@ -1,6 +1,6 @@
 [package]
 name = "llbot-cli"
-version = "1.3.3"
+version = "1.3.4"
 edition = "2021"
 description = "LLBot CLI launcher"
 
@@ -21,6 +21,7 @@ tar = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55"
+winapi = { version = "0.3", features = ["jobapi2", "winnt", "handleapi", "processthreadsapi"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winres = "0.1"
