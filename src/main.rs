@@ -268,6 +268,26 @@ fn main() {
     })
     .ok();
 
+    // 处理 SIGHUP（终端关闭）和 SIGTERM，确保子进程被清理
+    #[cfg(unix)]
+    {
+        use signal_hook::consts::{SIGHUP, SIGTERM};
+        use signal_hook::iterator::Signals;
+
+        let child_for_signal = child_arc.clone();
+        let mut signals = Signals::new(&[SIGHUP, SIGTERM]).expect("无法注册信号处理");
+        thread::spawn(move || {
+            for _sig in signals.forever() {
+                if let Ok(mut guard) = child_for_signal.lock() {
+                    if let Some(ref mut c) = *guard {
+                        let _ = c.kill();
+                    }
+                }
+                std::process::exit(0);
+            }
+        });
+    }
+
     let stdout = child.inner().stdout.take();
     let stderr = child.inner().stderr.take();
 
