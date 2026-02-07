@@ -28,6 +28,10 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact: llbot
             npm_pkg: llbot-cli-linux-arm64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: llbot
+            npm_pkg: llbot-cli-darwin-arm64
     
     runs-on: ${{ matrix.os }}
     
@@ -83,7 +87,8 @@ jobs:
           cp artifacts/llbot-cli-win-x64/llbot.exe release/llbot-win-x64.exe
           cp artifacts/llbot-cli-linux-x64/llbot release/llbot-linux-x64
           cp artifacts/llbot-cli-linux-arm64/llbot release/llbot-linux-arm64
-          chmod +x release/llbot-linux-x64 release/llbot-linux-arm64
+          cp artifacts/llbot-cli-darwin-arm64/llbot release/llbot-darwin-arm64
+          chmod +x release/llbot-linux-x64 release/llbot-linux-arm64 release/llbot-darwin-arm64
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -138,3 +143,11 @@ jobs:
           echo '{"name":"llbot-cli-linux-arm64","version":"'$VERSION'","description":"LLBot CLI for Linux arm64","repository":'"$REPO"'}' > package/package.json
           tar -czf llbot-cli-linux-arm64.tgz package
           npm publish llbot-cli-linux-arm64.tgz --provenance --access public
+          rm -rf package
+          
+          # darwin-arm64
+          mkdir -p package
+          cp artifacts/llbot-cli-darwin-arm64/llbot package/
+          echo '{"name":"llbot-cli-darwin-arm64","version":"'$VERSION'","description":"LLBot CLI for macOS arm64","repository":'"$REPO"'}' > package/package.json
+          tar -czf llbot-cli-darwin-arm64.tgz package
+          npm publish llbot-cli-darwin-arm64.tgz --provenance --access public
