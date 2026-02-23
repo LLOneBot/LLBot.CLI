@@ -148,6 +148,6 @@ jobs:
           # darwin-arm64
           mkdir -p package
           cp artifacts/llbot-cli-darwin-arm64/llbot package/
-          echo '{"name":"llbot-cli-darwin-arm64","version":"'$VERSION'","description":"LLBot CLI for macOS arm64","repository":'"$REPO"'}' > package/package.json
+          echo '{"name":"llbot-cli-macos-arm64","version":"'$VERSION'","description":"LLBot CLI for macOS arm64","repository":'"$REPO"'}' > package/package.json
           tar -czf llbot-cli-darwin-arm64.tgz package
           npm publish llbot-cli-darwin-arm64.tgz --provenance --access public
