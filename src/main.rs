@@ -131,7 +131,7 @@ fn main() {
     }
 
     // 检查 QQ 路径
-    if cfg!(target_os = "windows") {
+    let detected_qq_path = if cfg!(any(target_os = "windows", target_os = "macos")) {
         let qq_path_arg = args.iter()
             .find(|a| a.starts_with("--qq-path="))
             .map(|a| a.trim_start_matches("--qq-path=").to_string());
@@ -144,26 +144,39 @@ fn main() {
             eprintln!("错误: 指定的 QQ 路径不存在: {}", qq_path_arg.as_ref().unwrap());
         }
         
-        let qq_path = if qq_path_arg_invalid { None } else { qq_path_arg.or_else(get_qq_path_from_registry) };
+        let qq_path = if qq_path_arg_invalid { 
+            None 
+        } else { 
+            qq_path_arg.or_else(|| get_qq_path_from_registry(&exe_dir)) 
+        };
         
         if qq_path.is_none() || !qq_path.as_ref().map(|p| Path::new(p).exists()).unwrap_or(false) {
-            println!("未找到 QQ，是否下载并安装？(y/n)");
-            let mut input = String::new();
-            if std::io::stdin().read_line(&mut input).is_ok() {
-                if input.trim().eq_ignore_ascii_case("y") {
-                    if !download_and_install_qq() {
-                        eprintln!("QQ 下载安装失败");
+            if cfg!(target_os = "windows") {
+                println!("未找到 QQ，是否下载并安装？(y/n)");
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    if input.trim().eq_ignore_ascii_case("y") {
+                        if !download_and_install_qq() {
+                            eprintln!("QQ 下载安装失败");
+                            wait_exit(1);
+                        }
+                        println!("QQ 安装完成，请重新运行程序");
+                        wait_exit(0);
+                    } else {
+                        eprintln!("错误: 未找到 QQ，请安装 QQ 或使用 --qq-path 参数指定路径");
                         wait_exit(1);
                     }
-                    println!("QQ 安装完成，请重新运行程序");
-                    wait_exit(0);
-                } else {
-                    eprintln!("错误: 未找到 QQ，请安装 QQ 或使用 --qq-path 参数指定路径");
-                    wait_exit(1);
                 }
+            } else {
+                eprintln!("错误: 未找到 QQ，请安装 QQ 或使用 --qq-path 参数指定路径");
+                eprintln!("提示: 请将 QQ 安装到 /Applications/QQ.app 或放置到 bin/qq/QQ.app");
+                wait_exit(1);
             }
         }
-    }
+        qq_path
+    } else {
+        None
+    };
 
     migrate_old_files(&exe_dir);
 
@@ -214,6 +227,12 @@ fn main() {
     let mut cmd = Command::new(&pmhq_exe);
     cmd.arg("--port").arg(port.to_string());
     
+    // 如果检测到 QQ 路径，传递给 pmhq
+    if let Some(ref qq_path) = detected_qq_path {
+        println!("检测到 QQ 路径: {}", qq_path);
+        cmd.arg(format!("--qq-path={}", qq_path));
+    }
+    
     if !args.is_empty() {
         cmd.args(&args);
     }
@@ -257,6 +276,26 @@ fn main() {
         std::process::exit(0);
     })
     .ok();
+
+    // 处理 SIGHUP（终端关闭）和 SIGTERM，确保子进程被清理
+    #[cfg(unix)]
+    {
+        use signal_hook::consts::{SIGHUP, SIGTERM};
+        use signal_hook::iterator::Signals;
+
+        let child_for_signal = child_arc.clone();
+        let mut signals = Signals::new(&[SIGHUP, SIGTERM]).expect("无法注册信号处理");
+        thread::spawn(move || {
+            for _sig in signals.forever() {
+                if let Ok(mut guard) = child_for_signal.lock() {
+                    if let Some(ref mut c) = *guard {
+                        let _ = c.kill();
+                    }
+                }
+                std::process::exit(0);
+            }
+        });
+    }
 
     let stdout = child.inner().stdout.take();
     let stderr = child.inner().stderr.take();
@@ -485,7 +524,7 @@ fn wait_exit(code: i32) -> ! {
 }
 
 #[cfg(target_os = "windows")]
-fn get_qq_path_from_registry() -> Option<String> {
+fn get_qq_path_from_registry(_exe_dir: &Path) -> Option<String> {
     use winreg::enums::*;
     use winreg::RegKey;
 
@@ -507,8 +546,25 @@ fn get_qq_path_from_registry() -> Option<String> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn get_qq_path_from_registry() -> Option<String> {
+#[cfg(target_os = "macos")]
+fn get_qq_path_from_registry(exe_dir: &Path) -> Option<String> {
+    // 优先检查当前目录的 bin/qq/QQ.app
+    let local_qq = exe_dir.join("bin/qq/QQ.app/Contents/MacOS/QQ");
+    if local_qq.exists() {
+        return Some(local_qq.to_string_lossy().to_string());
+    }
+    
+    // 其次检查系统 Applications 目录
+    let system_qq = Path::new("/Applications/QQ.app/Contents/MacOS/QQ");
+    if system_qq.exists() {
+        return Some(system_qq.to_string_lossy().to_string());
+    }
+    
+    None
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn get_qq_path_from_registry(_exe_dir: &Path) -> Option<String> {
     None
 }
 
