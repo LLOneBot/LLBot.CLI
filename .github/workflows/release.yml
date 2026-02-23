@@ -87,8 +87,8 @@ jobs:
           cp artifacts/llbot-cli-win-x64/llbot.exe release/llbot-win-x64.exe
           cp artifacts/llbot-cli-linux-x64/llbot release/llbot-linux-x64
           cp artifacts/llbot-cli-linux-arm64/llbot release/llbot-linux-arm64
-          cp artifacts/llbot-cli-darwin-arm64/llbot release/llbot-darwin-arm64
-          chmod +x release/llbot-linux-x64 release/llbot-linux-arm64 release/llbot-darwin-arm64
+          cp artifacts/llbot-cli-darwin-arm64/llbot release/llbot-macos-arm64
+          chmod +x release/llbot-linux-x64 release/llbot-linux-arm64 release/llbot-macos-arm64
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
