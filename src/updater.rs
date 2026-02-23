@@ -277,12 +277,77 @@ pub fn check_running_processes() -> Vec<(String, u32)> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn kill_process(pid: u32) -> bool {
-    Command::new("taskkill")
-        .args(["/F", "/PID", &pid.to_string()])
+pub fn kill_process(pid: u32) -> Result<(), String> {
+    fn decode_taskkill_output(bytes: &[u8]) -> String {
+        use std::ptr;
+        use winapi::um::stringapiset::MultiByteToWideChar;
+        use winapi::um::winnls::GetOEMCP;
+
+        if bytes.is_empty() {
+            return String::new();
+        }
+
+        unsafe {
+            let code_page = GetOEMCP();
+            let wide_len = MultiByteToWideChar(
+                code_page,
+                0,
+                bytes.as_ptr() as *const i8,
+                bytes.len() as i32,
+                ptr::null_mut(),
+                0,
+            );
+
+            if wide_len <= 0 {
+                return String::from_utf8_lossy(bytes).to_string();
+            }
+
+            let mut wide = vec![0u16; wide_len as usize];
+            let written = MultiByteToWideChar(
+                code_page,
+                0,
+                bytes.as_ptr() as *const i8,
+                bytes.len() as i32,
+                wide.as_mut_ptr(),
+                wide_len,
+            );
+
+            if written <= 0 {
+                return String::from_utf8_lossy(bytes).to_string();
+            }
+
+            String::from_utf16_lossy(&wide)
+        }
+    }
+
+    let output = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .map_err(|e| format!("启动 taskkill 失败: {}", e))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = decode_taskkill_output(&output.stdout);
+    let stderr = decode_taskkill_output(&output.stderr);
+    let message = if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim().to_string()
+    } else {
+        format!("taskkill 失败，退出码: {:?}", output.status.code())
+    };
+
+    // 进程可能在我们调用前后就退出了；这种“找不到进程”视为成功。
+    if message.contains("没有找到进程")
+        || message.contains("未找到进程")
+        || message.to_lowercase().contains("not found")
+    {
+        return Ok(());
+    }
+
+    Err(message)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -467,7 +532,13 @@ pub fn run_update(exe_dir: &Path) {
     
     #[cfg(target_os = "windows")]
     {
-        let running = check_running_processes();
+        let mut running = check_running_processes();
+        // 避免误杀正在执行更新的当前进程
+        let current_pid = std::process::id();
+        running.retain(|(name, pid)| {
+            !(name.eq_ignore_ascii_case("llbot.exe") && *pid == current_pid)
+        });
+
         if !running.is_empty() {
             println!();
             println!("检测到以下进程正在运行:");
@@ -479,10 +550,13 @@ pub fn run_update(exe_dir: &Path) {
             if prompt_yes_no("是否关闭这些进程?") {
                 for (name, pid) in &running {
                     print!("正在关闭 {}...", name);
-                    if kill_process(*pid) {
-                        println!(" 完成");
-                    } else {
-                        println!(" 失败");
+                    match kill_process(*pid) {
+                        Ok(()) => println!(" 完成"),
+                        Err(e) => {
+                            println!(" 失败");
+                            eprintln!("  原因: {}", e);
+                            eprintln!("  提示: 可尝试以管理员身份运行，或手动在任务管理器结束该进程");
+                        }
                     }
                 }
                 println!();
@@ -549,6 +623,9 @@ fn print_update_row(info: &UpdateInfo) {
 #[cfg(target_os = "windows")]
 fn self_update(tarball_url: &str, exe_dir: &Path) -> Result<(), String> {
     use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::os::windows::process::CommandExt;
+    use winapi::um::winbase::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_CONSOLE};
     
     let current_exe = env::current_exe()
         .map_err(|e| format!("获取当前exe路径失败: {}", e))?;
@@ -556,7 +633,12 @@ fn self_update(tarball_url: &str, exe_dir: &Path) -> Result<(), String> {
         .and_then(|n| n.to_str())
         .unwrap_or("llbot.exe");
     
-    let temp_dir = exe_dir.join("_cli_update_temp");
+    let pid = std::process::id();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let temp_dir = env::temp_dir().join(format!("llbot-cli-update-{}-{}", pid, ts));
     fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("创建临时目录失败: {}", e))?;
     
@@ -568,54 +650,102 @@ fn self_update(tarball_url: &str, exe_dir: &Path) -> Result<(), String> {
     let backup_exe = exe_dir.join(format!("{}.bak", current_exe_name));
     let batch_script = temp_dir.join("_update.bat");
     
-    // 批处理：等待当前进程退出 -> 备份 -> 替换 -> 启动新版本 -> 清理
+    // 批处理：备份 -> 替换（带重试）-> 启动新版本 -> 清理
     let script = format!(
 r#"@echo off
-chcp 65001 >nul
-echo 正在更新 LLBot CLI，请稍候...
+setlocal EnableExtensions
 
-:wait
-timeout /t 1 /nobreak >nul
-tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL
-if not errorlevel 1 goto wait
+echo Updating LLBot CLI... Please wait.
 
-echo 备份旧版本...
-if exist "{backup}" del /f /q "{backup}"
-move /y "{current}" "{backup}"
+set "CURRENT={current}"
+set "BACKUP={backup}"
+set "NEWEXE={new_exe}"
+set "TEMPDIR={temp_dir}"
 
-echo 安装新版本...
-copy /y "{new_exe}" "{current}"
+set /a MAX_RETRY=10
 
-if errorlevel 1 (
-    echo 更新失败，正在恢复...
-    move /y "{backup}" "{current}"
-    pause
-    exit /b 1
+echo Backing up current executable...
+set /a i=0
+:try_backup
+if exist "%BACKUP%" del /f /q "%BACKUP%" >nul 2>&1
+move /y "%CURRENT%" "%BACKUP%" >nul 2>&1
+if not errorlevel 1 goto backup_ok
+set /a i+=1
+if %i% GEQ %MAX_RETRY% (
+  echo [ERROR] Failed to backup current executable.
+  echo It may still be running or you may lack permission.
+  goto fail
 )
+echo Waiting for file to be released... (%i%/%MAX_RETRY%)
+timeout /t 1 /nobreak >nul
+goto try_backup
 
-echo 更新完成！
-timeout /t 2 /nobreak >nul
+:backup_ok
 
-start "" "{current}"
-start /b "" cmd /c "timeout /t 3 /nobreak >nul & rmdir /s /q "{temp_dir}" 2>nul"
-exit
+echo Installing new executable...
+set /a i=0
+:try_copy
+copy /y "%NEWEXE%" "%CURRENT%" >nul 2>&1
+if not errorlevel 1 goto copy_ok
+set /a i+=1
+if %i% GEQ %MAX_RETRY% (
+  echo [ERROR] Failed to copy new executable. Restoring...
+  move /y "%BACKUP%" "%CURRENT%" >nul 2>&1
+  goto fail
+)
+echo Retry copy... (%i%/%MAX_RETRY%)
+timeout /t 1 /nobreak >nul
+goto try_copy
+
+:copy_ok
+
+echo Update finished.
+echo Press any key to continue...
+pause
+
+start "" "%CURRENT%"
+start /b "" cmd /c "timeout /t 3 /nobreak >nul & rmdir /s /q ""%TEMPDIR%"" 2>nul"
+goto :eof
+
+:fail
+echo.
+echo Update failed.
+echo Tips:
+echo   1) Run as Administrator
+echo   2) Make sure llbot/pmhq/QQ are stopped
+echo   3) Avoid protected install locations
+echo.
+echo Press any key to close this window...
+pause
 "#,
-        pid = std::process::id(),
         backup = backup_exe.display(),
         current = current_exe.display(),
         new_exe = new_exe.display(),
         temp_dir = temp_dir.display(),
     );
     
-    fs::write(&batch_script, &script)
+    // cmd.exe 对仅 LF 换行的 .bat 解析不稳定，可能导致多行粘连成一行。
+    // 这里强制写入 CRLF。注意不要写入 UTF-8 BOM，cmd.exe 可能无法正确识别首行指令。
+    let script_crlf = script.replace("\n", "\r\n");
+
+    fs::write(&batch_script, script_crlf.as_bytes())
         .map_err(|e| format!("创建更新脚本失败: {}", e))?;
     
     println!("启动更新脚本，程序即将退出...");
-    
-    Command::new("cmd")
-        .args(["/C", "start", "", "/MIN", batch_script.to_str().unwrap()])
-        .spawn()
-        .map_err(|e| format!("启动更新脚本失败: {}", e))?;
+
+    // 说明：有些宿主（VS Code/终端）会把当前进程放进 JobObject，并在进程退出时
+    // 连带杀掉子进程，导致更新脚本“看起来没有启动”。这里用 BREAKAWAY + NEW_CONSOLE
+    // 尽量让更新脚本独立存活。
+    let mut cmd = Command::new("cmd");
+    // 使用 /C 执行更新脚本。按键等待放在脚本内部，避免外层命令拼接带来的解析差异。
+    // 另外把工作目录切到临时目录，避免路径引号/转义问题。
+    cmd.current_dir(&temp_dir)
+        .arg("/C")
+        .arg("call _update.bat");
+    cmd.creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_CONSOLE);
+
+    cmd.spawn()
+        .map_err(|e| format!("启动更新脚本失败: {}（可能需要管理员权限，或被 JobObject 限制）", e))?;
     
     std::process::exit(0);
 }
@@ -624,6 +754,7 @@ exit
 fn self_update(tarball_url: &str, exe_dir: &Path) -> Result<(), String> {
     use std::env;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
     
     let current_exe = env::current_exe()
         .map_err(|e| format!("获取当前exe路径失败: {}", e))?;
@@ -631,7 +762,12 @@ fn self_update(tarball_url: &str, exe_dir: &Path) -> Result<(), String> {
         .and_then(|n| n.to_str())
         .unwrap_or("llbot");
     
-    let temp_dir = exe_dir.join("_cli_update_temp");
+    let pid = std::process::id();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let temp_dir = env::temp_dir().join(format!("llbot-cli-update-{}-{}", pid, ts));
     fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("创建临时目录失败: {}", e))?;
     

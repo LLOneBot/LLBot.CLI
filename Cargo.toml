@@ -1,6 +1,6 @@
 [package]
 name = "llbot-cli"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 description = "LLBot CLI launcher"
 
