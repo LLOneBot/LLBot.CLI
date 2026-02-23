@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "LLBot (F5)",
+      "type": "lldb",
+      "request": "launch",
+      "preLaunchTask": "cargo build",
+      "program": "${workspaceFolder}\\target\\debug\\llbot.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

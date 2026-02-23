@@ -18,6 +18,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use std::ffi::OsStr;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+
+#[cfg(target_os = "windows")]
+use winapi::um::wincon::SetConsoleTitleW;
+
 const DEFAULT_PORT: u16 = 13000;
 const PORT_RANGE_END: u16 = 14000;
 const QQ_DOWNLOAD_URL: &str = "https://dldir1v6.qq.com/qqfile/qq/QQNT/c50d6326/QQ9.9.22.40768_x64.exe";
@@ -324,6 +333,9 @@ fn start_login_listener(
     thread::spawn(move || {
         let client = PMHQClient::new(port).with_timeout(Duration::from_secs(10));
 
+        #[cfg(target_os = "windows")]
+        start_windows_selfinfo_title_thread(client.clone());
+
         thread::sleep(Duration::from_secs(3));
 
         let logged_in_refresh = logged_in.clone();
@@ -379,6 +391,40 @@ fn start_login_listener(
             println!();
         }
     });
+}
+
+#[cfg(target_os = "windows")]
+fn start_windows_selfinfo_title_thread(client: PMHQClient) {
+    thread::spawn(move || {
+        // pmhq 在登录完成后仍可能需要一点时间才能返回完整 SelfInfo
+        loop {
+            match client.get_self_info() {
+                Ok(info) => {
+                    if !info.uin.is_empty() && !info.nickname.is_empty() {
+                        let title = format!("LLBot - {}({})", info.nickname, info.uin);
+                        let _ = set_windows_console_title(&title);
+                        break;
+                    }
+                }
+                Err(_) => {
+                    // 忽略未就绪/临时错误，继续重试
+                }
+            }
+
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_console_title(title: &str) -> Result<(), String> {
+    let wide: Vec<u16> = OsStr::new(title).encode_wide().chain(std::iter::once(0)).collect();
+    let ok = unsafe { SetConsoleTitleW(wide.as_ptr()) };
+    if ok == 0 {
+        Err("SetConsoleTitleW 调用失败".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn migrate_old_files(exe_dir: &Path) {
