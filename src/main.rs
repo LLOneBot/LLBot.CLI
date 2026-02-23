@@ -3,97 +3,24 @@
 mod pmhq_client;
 mod qrcode_display;
 mod updater;
+mod login;
+mod migrate;
+mod qq;
+mod util;
+mod windows_job;
 
 use command_group::{CommandGroup, GroupChild};
-use pmhq_client::PMHQClient;
-use qrcode_display::{print_qrcode_terminal, save_qrcode_image};
 use std::env;
-use std::fs::{self, File};
 use std::io::Write;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-#[cfg(target_os = "windows")]
-use std::ffi::OsStr;
-
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStrExt;
-
-#[cfg(target_os = "windows")]
-use winapi::um::wincon::SetConsoleTitleW;
-
 const DEFAULT_PORT: u16 = 13000;
 const PORT_RANGE_END: u16 = 14000;
-const QQ_DOWNLOAD_URL: &str = "https://dldir1v6.qq.com/qqfile/qq/QQNT/c50d6326/QQ9.9.22.40768_x64.exe";
-
-fn should_show_terminal_qrcode(exe_dir: &Path, args: &[String]) -> bool {
-    if cfg!(not(target_os = "windows")) {
-        return true;
-    }
-    
-    if args.iter().any(|a| a == "--headless") {
-        return true;
-    }
-    
-    let config_path = exe_dir.join("bin/pmhq/pmhq_config.json");
-    if let Ok(content) = fs::read_to_string(&config_path) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            return json.get("headless").and_then(|v| v.as_bool()).unwrap_or(false);
-        }
-    }
-    false
-}
-
-fn get_exe_name(base: &str) -> String {
-    if cfg!(target_os = "windows") {
-        format!("{}.exe", base)
-    } else {
-        base.to_string()
-    }
-}
-
-fn find_pmhq_exe(exe_dir: &Path) -> Option<PathBuf> {
-    let pmhq_dir = exe_dir.join("bin/pmhq");
-    
-    let platform_arch = if cfg!(target_os = "windows") {
-        "win-x64"
-    } else if cfg!(target_os = "linux") {
-        if cfg!(target_arch = "x86_64") {
-            "linux-x64"
-        } else if cfg!(target_arch = "aarch64") {
-            "linux-arm64"
-        } else {
-            ""
-        }
-    } else if cfg!(target_os = "macos") {
-        if cfg!(target_arch = "aarch64") {
-            "macos-arm64"
-        } else {
-            "macos-x64"
-        }
-    } else {
-        ""
-    };
-    
-    if !platform_arch.is_empty() {
-        let arch_specific = pmhq_dir.join(get_exe_name(&format!("pmhq-{}", platform_arch)));
-        if arch_specific.exists() {
-            return Some(arch_specific);
-        }
-    }
-    
-    let generic = pmhq_dir.join(get_exe_name("pmhq"));
-    if generic.exists() {
-        return Some(generic);
-    }
-    
-    None
-}
 
 fn main() {
     let exe_dir = env::current_exe()
@@ -102,12 +29,25 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("."));
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let pmhq_exe = match find_pmhq_exe(&exe_dir) {
+
+    // --update 检查并执行更新（不依赖 pmhq 已安装）
+    if args.iter().any(|a| a == "--update") {
+        updater::run_update(&exe_dir);
+        util::wait_exit(0);
+    }
+
+    // 启动时自动补齐必要组件（缺失才下载）
+    if let Err(e) = updater::ensure_required_components(&exe_dir) {
+        eprintln!("自动安装组件失败: {}", e);
+        util::wait_exit(1);
+    }
+
+    let pmhq_exe = match util::find_pmhq_exe(&exe_dir) {
         Some(path) => path,
         None => {
             eprintln!("错误: 未找到 pmhq 可执行文件");
             eprintln!("请确保 bin/pmhq/ 目录下存在 pmhq 或 pmhq-<platform>-<arch> 文件");
-            wait_exit(1);
+            util::wait_exit(1);
         }
     };
 
@@ -124,64 +64,13 @@ fn main() {
         std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
     }
 
-    // --update 检查并执行更新
-    if args.iter().any(|a| a == "--update") {
-        updater::run_update(&exe_dir);
-        wait_exit(0);
-    }
-
     // 检查 QQ 路径
-    let detected_qq_path = if cfg!(any(target_os = "windows", target_os = "macos")) {
-        let qq_path_arg = args.iter()
-            .find(|a| a.starts_with("--qq-path="))
-            .map(|a| a.trim_start_matches("--qq-path=").to_string());
-        
-        let qq_path_arg_invalid = qq_path_arg.as_ref()
-            .map(|p| !Path::new(p).exists())
-            .unwrap_or(false);
-        
-        if qq_path_arg_invalid {
-            eprintln!("错误: 指定的 QQ 路径不存在: {}", qq_path_arg.as_ref().unwrap());
-        }
-        
-        let qq_path = if qq_path_arg_invalid { 
-            None 
-        } else { 
-            qq_path_arg.or_else(|| get_qq_path_from_registry(&exe_dir)) 
-        };
-        
-        if qq_path.is_none() || !qq_path.as_ref().map(|p| Path::new(p).exists()).unwrap_or(false) {
-            if cfg!(target_os = "windows") {
-                println!("未找到 QQ，是否下载并安装？(y/n)");
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_ok() {
-                    if input.trim().eq_ignore_ascii_case("y") {
-                        if !download_and_install_qq() {
-                            eprintln!("QQ 下载安装失败");
-                            wait_exit(1);
-                        }
-                        println!("QQ 安装完成，请重新运行程序");
-                        wait_exit(0);
-                    } else {
-                        eprintln!("错误: 未找到 QQ，请安装 QQ 或使用 --qq-path 参数指定路径");
-                        wait_exit(1);
-                    }
-                }
-            } else {
-                eprintln!("错误: 未找到 QQ，请安装 QQ 或使用 --qq-path 参数指定路径");
-                eprintln!("提示: 请将 QQ 安装到 /Applications/QQ.app 或放置到 bin/qq/QQ.app");
-                wait_exit(1);
-            }
-        }
-        qq_path
-    } else {
-        None
-    };
+    let detected_qq_path = qq::detect_qq_path(&exe_dir, &args);
 
-    migrate_old_files(&exe_dir);
+    migrate::migrate_old_files(&exe_dir);
 
     let llbot_dir = exe_dir.join("bin/llbot");
-    let node_exe = get_exe_name("node");
+    let node_exe = util::get_exe_name("node");
     let node_path = llbot_dir.join(&node_exe);
 
     if !node_path.exists() {
@@ -190,17 +79,17 @@ fn main() {
             node_exe,
             node_path.display()
         );
-        wait_exit(1);
+        util::wait_exit(1);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = fs::metadata(&node_path) {
+        if let Ok(metadata) = std::fs::metadata(&node_path) {
             let mut perms = metadata.permissions();
             if perms.mode() & 0o111 == 0 {
                 perms.set_mode(perms.mode() | 0o755);
-                if let Err(e) = fs::set_permissions(&node_path, perms) {
+                if let Err(e) = std::fs::set_permissions(&node_path, perms) {
                     eprintln!("警告: 设置 node 执行权限失败: {}", e);
                 }
             }
@@ -211,12 +100,12 @@ fn main() {
             "错误: 未找到 llbot.js: {}",
             llbot_dir.join("llbot.js").display()
         );
-        wait_exit(1);
+        util::wait_exit(1);
     }
 
-    let port = find_available_port(DEFAULT_PORT, PORT_RANGE_END).unwrap_or_else(|| {
+    let port = util::find_available_port(DEFAULT_PORT, PORT_RANGE_END).unwrap_or_else(|| {
         eprintln!("错误: 无法找到可用端口 ({}-{})", DEFAULT_PORT, PORT_RANGE_END);
-        wait_exit(1);
+        util::wait_exit(1);
     });
 
     println!("LLBot CLI 启动器");
@@ -255,12 +144,12 @@ fn main() {
         Ok(child) => child,
         Err(e) => {
             eprintln!("启动 pmhq 失败: {}", e);
-            wait_exit(1);
+            util::wait_exit(1);
         }
     };
 
     #[cfg(target_os = "windows")]
-    if let Err(e) = assign_to_job_object(&mut child) {
+    if let Err(e) = windows_job::assign_to_job_object(&mut child) {
         eprintln!("警告: 无法设置进程保护: {}", e);
     }
 
@@ -334,9 +223,9 @@ fn main() {
 
     let logged_in = Arc::new(AtomicBool::new(false));
     let qrcode_path = exe_dir.join("qrcode.png");
-    let show_terminal_qr = should_show_terminal_qrcode(&exe_dir, &args);
+    let show_terminal_qr = util::should_show_terminal_qrcode(&exe_dir, &args);
 
-    start_login_listener(port, logged_in.clone(), qrcode_path, show_terminal_qr);
+    login::start_login_listener(port, logged_in.clone(), qrcode_path, show_terminal_qr);
 
     // 等待子进程结束
     loop {
@@ -363,348 +252,3 @@ fn main() {
     }
 }
 
-fn start_login_listener(
-    port: u16,
-    logged_in: Arc<AtomicBool>,
-    qrcode_path: PathBuf,
-    show_terminal_qr: bool,
-) {
-    thread::spawn(move || {
-        let client = PMHQClient::new(port).with_timeout(Duration::from_secs(10));
-
-        #[cfg(target_os = "windows")]
-        start_windows_selfinfo_title_thread(client.clone());
-
-        thread::sleep(Duration::from_secs(3));
-
-        let logged_in_refresh = logged_in.clone();
-        let client_refresh = client.clone();
-        thread::spawn(move || {
-            loop {
-                if logged_in_refresh.load(Ordering::Relaxed) {
-                    break;
-                }
-                let _ = client_refresh.request_qrcode();
-                for _ in 0..120 {
-                    if logged_in_refresh.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    thread::sleep(Duration::from_secs(1));
-                }
-            }
-        });
-
-        client.start_sse_listener(logged_in.clone(), move |qrcode_url, png_base64| {
-            if show_terminal_qr {
-                print_qrcode_terminal(qrcode_url);
-            }
-
-            if !png_base64.is_empty() {
-                if let Err(e) = save_qrcode_image(png_base64, &qrcode_path) {
-                    eprintln!("保存二维码失败: {}", e);
-                } else {
-                    println!("二维码文件: {}", qrcode_path.display());
-                }
-            }
-
-            println!(
-                "二维码网址: https://api.2dcode.biz/v1/create-qr-code?data={}",
-                qrcode_url
-            );
-            println!("请使用手机QQ扫码登录");
-            println!();
-        });
-
-        if logged_in.load(Ordering::Relaxed) {
-            println!();
-            println!("================");
-            println!("登录成功!");
-
-            if let Ok(info) = client.get_self_info() {
-                println!("QQ号: {}", info.uin);
-                if !info.nickname.is_empty() {
-                    println!("昵称: {}", info.nickname);
-                }
-            }
-            println!("================");
-            println!();
-        }
-    });
-}
-
-#[cfg(target_os = "windows")]
-fn start_windows_selfinfo_title_thread(client: PMHQClient) {
-    thread::spawn(move || {
-        // pmhq 在登录完成后仍可能需要一点时间才能返回完整 SelfInfo
-        loop {
-            match client.get_self_info() {
-                Ok(info) => {
-                    if !info.uin.is_empty() && !info.nickname.is_empty() {
-                        let title = format!("LLBot - {}({})", info.nickname, info.uin);
-                        let _ = set_windows_console_title(&title);
-                        break;
-                    }
-                }
-                Err(_) => {
-                    // 忽略未就绪/临时错误，继续重试
-                }
-            }
-
-            thread::sleep(Duration::from_secs(1));
-        }
-    });
-}
-
-#[cfg(target_os = "windows")]
-fn set_windows_console_title(title: &str) -> Result<(), String> {
-    let wide: Vec<u16> = OsStr::new(title).encode_wide().chain(std::iter::once(0)).collect();
-    let ok = unsafe { SetConsoleTitleW(wide.as_ptr()) };
-    if ok == 0 {
-        Err("SetConsoleTitleW 调用失败".to_string())
-    } else {
-        Ok(())
-    }
-}
-
-fn migrate_old_files(exe_dir: &Path) {
-    // 迁移 data 目录
-    let data_dir = exe_dir.join("data");
-    let target_data_dir = exe_dir.join("bin/llbot/data");
-    if data_dir.exists() && data_dir.is_dir() {
-        println!("检测到 data 目录，正在移动到 bin/llbot/...");
-        if target_data_dir.exists() {
-            let _ = fs::remove_dir_all(&target_data_dir);
-        }
-        if fs::rename(&data_dir, &target_data_dir).is_err() {
-            if let Err(e) = copy_dir_recursive(&data_dir, &target_data_dir) {
-                eprintln!("警告: 移动 data 目录失败: {}", e);
-            } else {
-                let _ = fs::remove_dir_all(&data_dir);
-                println!("data 目录移动完成");
-            }
-        } else {
-            println!("data 目录移动完成");
-        }
-    }
-
-    // 迁移 pmhq_config.json
-    let pmhq_config = exe_dir.join("pmhq_config.json");
-    let target_pmhq_config = exe_dir.join("bin/pmhq/pmhq_config.json");
-    if pmhq_config.exists() && pmhq_config.is_file() {
-        println!("检测到 pmhq_config.json，正在移动到 bin/pmhq/...");
-        if target_pmhq_config.exists() {
-            let _ = fs::remove_file(&target_pmhq_config);
-        }
-        if fs::rename(&pmhq_config, &target_pmhq_config).is_err() {
-            if let Err(e) = fs::copy(&pmhq_config, &target_pmhq_config) {
-                eprintln!("警告: 移动 pmhq_config.json 失败: {}", e);
-            } else {
-                let _ = fs::remove_file(&pmhq_config);
-                println!("pmhq_config.json 移动完成");
-            }
-        } else {
-            println!("pmhq_config.json 移动完成");
-        }
-    }
-}
-
-fn find_available_port(start: u16, end: u16) -> Option<u16> {
-    for port in start..end {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Some(port);
-        }
-    }
-    None
-}
-
-fn wait_exit(code: i32) -> ! {
-    println!("\n按任意键退出...");
-    let _ = std::io::stdin().read_line(&mut String::new());
-    std::process::exit(code);
-}
-
-#[cfg(target_os = "windows")]
-fn get_qq_path_from_registry(_exe_dir: &Path) -> Option<String> {
-    use winreg::enums::*;
-    use winreg::RegKey;
-
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let key = hklm
-        .open_subkey(r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\QQ")
-        .ok()?;
-
-    let uninstall_path: String = key.get_value("UninstallString").ok()?;
-    let uninstall_path = uninstall_path.trim_matches('"');
-
-    let qq_dir = Path::new(uninstall_path).parent()?;
-    let qq_exe = qq_dir.join("QQ.exe");
-
-    if qq_exe.exists() {
-        Some(qq_exe.to_string_lossy().to_string())
-    } else {
-        None
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn get_qq_path_from_registry(exe_dir: &Path) -> Option<String> {
-    // 优先检查当前目录的 bin/qq/QQ.app
-    let local_qq = exe_dir.join("bin/qq/QQ.app/Contents/MacOS/QQ");
-    if local_qq.exists() {
-        return Some(local_qq.to_string_lossy().to_string());
-    }
-    
-    // 其次检查系统 Applications 目录
-    let system_qq = Path::new("/Applications/QQ.app/Contents/MacOS/QQ");
-    if system_qq.exists() {
-        return Some(system_qq.to_string_lossy().to_string());
-    }
-    
-    None
-}
-
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-fn get_qq_path_from_registry(_exe_dir: &Path) -> Option<String> {
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn download_and_install_qq() -> bool {
-    println!("正在下载 QQ...");
-
-    let temp_dir = env::temp_dir();
-    let temp_file = temp_dir.join("QQ_Setup.exe");
-
-    match ureq::get(QQ_DOWNLOAD_URL)
-        .timeout(std::time::Duration::from_secs(300))
-        .call()
-    {
-        Ok(resp) => {
-            let total_size = resp
-                .header("Content-Length")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
-
-            let mut file = match File::create(&temp_file) {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("创建临时文件失败: {}", e);
-                    return false;
-                }
-            };
-
-            let mut reader = resp.into_reader();
-            let mut buffer = [0u8; 65536];
-            let mut downloaded: u64 = 0;
-
-            loop {
-                match std::io::Read::read(&mut reader, &mut buffer) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if file.write_all(&buffer[..n]).is_err() {
-                            eprintln!("写入文件失败");
-                            return false;
-                        }
-                        downloaded += n as u64;
-                        if total_size > 0 {
-                            print!(
-                                "\r下载进度: {:.1} MB / {:.1} MB ({:.0}%)",
-                                downloaded as f64 / 1024.0 / 1024.0,
-                                total_size as f64 / 1024.0 / 1024.0,
-                                downloaded as f64 / total_size as f64 * 100.0
-                            );
-                            let _ = std::io::stdout().flush();
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("\n下载失败: {}", e);
-                        return false;
-                    }
-                }
-            }
-            println!();
-
-            println!("正在安装 QQ（静默安装）...");
-            match Command::new(&temp_file).arg("/S").status() {
-                Ok(status) => {
-                    let _ = fs::remove_file(&temp_file);
-                    status.success()
-                }
-                Err(e) => {
-                    eprintln!("启动安装程序失败: {}", e);
-                    let _ = fs::remove_file(&temp_file);
-                    false
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("下载失败: {}", e);
-            false
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn download_and_install_qq() -> bool {
-    eprintln!("QQ 自动安装仅支持 Windows");
-    false
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if !dst.exists() {
-        fs::create_dir_all(dst)?;
-    }
-
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn assign_to_job_object(child: &mut GroupChild) -> std::io::Result<()> {
-    use std::os::windows::io::AsRawHandle;
-    use std::ptr;
-    use winapi::um::handleapi::CloseHandle;
-    use winapi::um::jobapi2::*;
-    use winapi::um::winnt::*;
-
-    unsafe {
-        let job = CreateJobObjectW(ptr::null_mut(), ptr::null());
-        if job.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-
-        let result = SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &mut info as *mut _ as *mut _,
-            std::mem::size_of_val(&info) as u32,
-        );
-
-        if result == 0 {
-            CloseHandle(job);
-            return Err(std::io::Error::last_os_error());
-        }
-
-        let handle = child.inner().as_raw_handle() as *mut winapi::ctypes::c_void;
-        if AssignProcessToJobObject(job, handle) == 0 {
-            CloseHandle(job);
-            return Err(std::io::Error::last_os_error());
-        }
-
-        let _ = job;
-        Ok(())
-    }
-}

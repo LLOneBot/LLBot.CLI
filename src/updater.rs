@@ -10,6 +10,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use crate::util;
+
 const NPM_OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
 const NPM_REGISTRY_MIRRORS: &[&str] = &[
     "https://registry.npmmirror.com",
@@ -387,6 +389,44 @@ pub fn prompt_yes_no(prompt: &str) -> bool {
         return input == "y" || input == "yes";
     }
     false
+}
+
+/// 启动时自动补齐必要组件（pmhq / llbot）。
+///
+/// - 仅在检测到缺失时才会联网下载
+/// - 不做交互式确认
+pub fn ensure_required_components(exe_dir: &Path) -> Result<(), String> {
+    let packages = ComponentPackages::for_current_platform();
+    let mut changed = false;
+
+    // pmhq
+    if util::find_pmhq_exe(exe_dir).is_none() {
+        println!("检测到 PMHQ 未安装，正在自动下载...");
+        let info = fetch_package_info(&packages.pmhq_package)?;
+        let url = get_tarball_url(&packages.pmhq_package, &info.version);
+        download_and_extract(&url, &exe_dir.join("bin/pmhq"))?;
+        changed = true;
+    }
+
+    // llbot（node + llbot.js）
+    let llbot_dir = exe_dir.join("bin/llbot");
+    let node_exe = util::get_exe_name("node");
+    let node_path = llbot_dir.join(&node_exe);
+    let llbot_js_path = llbot_dir.join("llbot.js");
+    if !node_path.exists() || !llbot_js_path.exists() {
+        println!("检测到 LLBot 组件未安装，正在自动下载...");
+        let info = fetch_package_info(&packages.llbot_package)?;
+        let url = get_tarball_url(&packages.llbot_package, &info.version);
+        download_and_extract(&url, &llbot_dir)?;
+        changed = true;
+    }
+
+    if changed {
+        println!("组件安装完成");
+        println!();
+    }
+
+    Ok(())
 }
 
 pub fn run_update(exe_dir: &Path) {
