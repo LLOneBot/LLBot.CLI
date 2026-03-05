@@ -21,7 +21,7 @@ use std::time::Duration;
 
 const DEFAULT_PORT: u16 = 13000;
 const PORT_RANGE_END: u16 = 14000;
-const QQ_EXIT_BUFFER_SECS: u64 = 15;
+const DEFAULT_QQ_EXIT_DELAY: u64 = 15;
 
 fn main() {
     let exe_dir = env::current_exe()
@@ -57,7 +57,8 @@ fn main() {
         println!("llbot-cli {}", env!("CARGO_PKG_VERSION"));
         println!();
         println!("CLI 专用参数:");
-        println!("  --no-exit-with-qq    禁用 QQ 退出时自动退出（默认启用，有 15 秒缓冲）");
+        println!("  --no-exit-with-qq       禁用 QQ 退出时自动退出（默认启用）");
+        println!("  --qq-exit-delay=<秒>    QQ 退出后的缓冲时间（默认 15 秒，0 为立即退出）");
         println!();
         let status = Command::new(&pmhq_exe).args(&args).status();
         std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
@@ -73,10 +74,30 @@ fn main() {
     // 解析 --exit-with-qq / --no-exit-with-qq 参数（默认启用）
     let exit_with_qq = !args.iter().any(|a| a == "--no-exit-with-qq");
 
+    // 解析 --qq-exit-delay 参数（默认 15 秒）
+    let qq_exit_delay: u64 = args
+        .iter()
+        .find(|a| a.starts_with("--qq-exit-delay="))
+        .and_then(|a| a.trim_start_matches("--qq-exit-delay=").parse().ok())
+        .unwrap_or(DEFAULT_QQ_EXIT_DELAY);
+
+    if exit_with_qq {
+        if qq_exit_delay > 0 {
+            println!("[监控] QQ 退出监控已启用，缓冲时间 {} 秒（使用 --no-exit-with-qq 可禁用）", qq_exit_delay);
+        } else {
+            println!("[监控] QQ 退出监控已启用，QQ 退出后立即退出（使用 --no-exit-with-qq 可禁用）");
+        }
+        let _ = std::io::stdout().flush();
+    }
+
     // 过滤掉 CLI 专用参数，不传递给 pmhq
     let pmhq_args: Vec<String> = args
         .iter()
-        .filter(|a| *a != "--exit-with-qq" && *a != "--no-exit-with-qq")
+        .filter(|a| {
+            *a != "--exit-with-qq"
+                && *a != "--no-exit-with-qq"
+                && !a.starts_with("--qq-exit-delay=")
+        })
         .cloned()
         .collect();
 
@@ -86,17 +107,23 @@ fn main() {
     migrate::migrate_old_files(&exe_dir);
 
     let llbot_dir = exe_dir.join("bin/llbot");
-    let node_exe = util::get_exe_name("node");
-    let node_path = llbot_dir.join(&node_exe);
 
-    if !node_path.exists() {
-        eprintln!(
-            "错误: 未找到 {}: {}",
-            node_exe,
-            node_path.display()
-        );
-        util::wait_exit(1);
-    }
+    // 查找可用的 node（本地目录 -> 系统 PATH -> 自动下载）
+    let node_path = match util::find_usable_node(&exe_dir) {
+        Some(path) => path,
+        None => {
+            println!("未找到可用的 Node.js (需要版本 >= 24)");
+            println!("正在自动下载 Node.js...");
+            match updater::download_and_install_node(&exe_dir) {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!("下载 Node.js 失败: {}", e);
+                    eprintln!("请手动安装 Node.js >= 24 或将其放置到 bin/llbot/ 目录");
+                    util::wait_exit(1);
+                }
+            }
+        }
+    };
 
     #[cfg(not(target_os = "windows"))]
     {
@@ -213,11 +240,9 @@ fn main() {
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stdout);
-            let mut out = std::io::stdout().lock();
             for line in reader.lines() {
                 if let Ok(line) = line {
-                    let _ = writeln!(out, "{}", line);
-                    let _ = out.flush();
+                    println!("{}", line);
                 }
             }
         });
@@ -227,11 +252,9 @@ fn main() {
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stderr);
-            let mut err = std::io::stderr().lock();
             for line in reader.lines() {
                 if let Ok(line) = line {
-                    let _ = writeln!(err, "{}", line);
-                    let _ = err.flush();
+                    eprintln!("{}", line);
                 }
             }
         });
@@ -245,32 +268,74 @@ fn main() {
 
     // 启动 QQ 进程监控（如果启用）
     if exit_with_qq {
+        println!("[监控] 正在启动监控线程...");
         let child_for_qq_monitor = child_arc.clone();
         thread::spawn(move || {
-            // 等待 QQ 进程启动
-            println!("等待 QQ 进程启动...");
-            loop {
-                if qq::is_qq_running() {
-                    println!("QQ 进程已启动，开始监控");
-                    break;
+            println!("[监控] 监控线程已启动");
+            let client = pmhq_client::PMHQClient::new(port);
+
+            // 等待获取 QQ PID
+            println!("[监控] 等待 QQ 进程启动...");
+            let mut qq_pid = loop {
+                match client.get_qq_pid() {
+                    Some(pid) => {
+                        println!("[监控] 检测到 QQ 进程 (PID: {})", pid);
+                        break pid;
+                    }
+                    None => {
+                        // 静默重试，不输出日志避免刷屏
+                    }
                 }
                 thread::sleep(Duration::from_secs(2));
-            }
+            };
+
+            println!("[监控] 开始监控 QQ 进程");
 
             loop {
                 thread::sleep(Duration::from_secs(2));
 
-                if !qq::is_qq_running() {
-                    println!("\n检测到 QQ 进程已退出，{}秒后将退出所有进程...", QQ_EXIT_BUFFER_SECS);
-                    thread::sleep(Duration::from_secs(QQ_EXIT_BUFFER_SECS));
+                let running = qq::is_process_running(qq_pid);
+                if !running {
+                    println!("[监控] 检测到 QQ 进程 (PID: {}) 已退出", qq_pid);
 
-                    // 再次检查 QQ 是否恢复
-                    if qq::is_qq_running() {
-                        println!("QQ 进程已恢复，继续运行");
+                    // 如果缓冲时间为 0，立即退出
+                    if qq_exit_delay == 0 {
+                        println!("[监控] 正在退出所有进程...");
+                        if let Ok(mut guard) = child_for_qq_monitor.lock() {
+                            if let Some(ref mut c) = *guard {
+                                let _ = c.kill();
+                            }
+                        }
+                        std::process::exit(0);
+                    }
+
+                    println!("[监控] 将在 {} 秒后退出程序...", qq_exit_delay);
+
+                    // 等待缓冲时间，期间检查是否恢复
+                    for _ in 0..qq_exit_delay {
+                        thread::sleep(Duration::from_secs(1));
+
+                        // 检查是否恢复
+                        if let Some(new_pid) = client.get_qq_pid() {
+                            println!("[监控] QQ 进程已恢复 (新 PID: {})", new_pid);
+                            qq_pid = new_pid;
+                            break;
+                        }
+                    }
+
+                    // 再次检查是否已恢复
+                    if qq::is_process_running(qq_pid) {
                         continue;
                     }
 
-                    println!("正在退出所有进程...");
+                    // 最终检查
+                    if let Some(new_pid) = client.get_qq_pid() {
+                        println!("[监控] QQ 进程已恢复 (新 PID: {})", new_pid);
+                        qq_pid = new_pid;
+                        continue;
+                    }
+
+                    println!("[监控] 正在退出所有进程...");
                     if let Ok(mut guard) = child_for_qq_monitor.lock() {
                         if let Some(ref mut c) = *guard {
                             let _ = c.kill();

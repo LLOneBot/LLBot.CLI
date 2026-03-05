@@ -801,7 +801,7 @@ fn self_update(tarball_url: &str, exe_dir: &Path) -> Result<(), String> {
 
 fn find_exe_in_dir(dir: &Path) -> Option<std::path::PathBuf> {
     let exe_name = if cfg!(target_os = "windows") { "llbot.exe" } else { "llbot" };
-    
+
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -815,4 +815,84 @@ fn find_exe_in_dir(dir: &Path) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// 获取 llonebot-node 包名
+fn get_node_package_name() -> String {
+    let (os_name, arch_name) = get_platform_info();
+    format!("llonebot-node-{}-{}", os_name, arch_name)
+}
+
+/// 下载并安装 Node.js（从 npm registry）
+pub fn download_and_install_node(exe_dir: &Path) -> Result<std::path::PathBuf, String> {
+    let package_name = get_node_package_name();
+    println!("正在获取 {} 最新版本...", package_name);
+
+    let info = fetch_package_info(&package_name)?;
+    println!("将下载 {} v{}", package_name, info.version);
+
+    let url = get_tarball_url(&package_name, &info.version);
+
+    let llbot_dir = exe_dir.join("bin/llbot");
+    fs::create_dir_all(&llbot_dir)
+        .map_err(|e| format!("创建目录失败: {}", e))?;
+
+    download_node_from_npm(&url, &llbot_dir)
+}
+
+fn download_node_from_npm(url: &str, llbot_dir: &Path) -> Result<std::path::PathBuf, String> {
+    println!("下载中: {}", url);
+
+    let resp = ureq::get(url)
+        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .call()
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP 错误: {}", resp.status()));
+    }
+
+    let content_length = resp.header("content-length")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    println!("下载中... ({}KB)", content_length / 1024);
+
+    let mut data = Vec::with_capacity(content_length);
+    resp.into_reader()
+        .read_to_end(&mut data)
+        .map_err(|e| format!("读取数据失败: {}", e))?;
+
+    println!("下载完成，解压中...");
+
+    // 解压 npm 包（tgz 格式）
+    let gz = flate2::read::GzDecoder::new(BufReader::new(data.as_slice()));
+    let mut archive = tar::Archive::new(gz);
+
+    let node_exe = util::get_exe_name("node");
+    let node_path = llbot_dir.join(&node_exe);
+
+    // npm 包结构: package/node 或 package/node.exe
+    let expected_name = format!("package/{}", node_exe);
+
+    for entry in archive.entries().map_err(|e| format!("读取 tar 失败: {}", e))? {
+        let mut entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+        let path = entry.path().map_err(|e| format!("获取路径失败: {}", e))?;
+
+        if path.to_string_lossy() == expected_name {
+            entry.unpack(&node_path).map_err(|e| format!("解压失败: {}", e))?;
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&node_path, fs::Permissions::from_mode(0o755))
+                    .map_err(|e| format!("设置权限失败: {}", e))?;
+            }
+
+            println!("Node.js 安装完成");
+            return Ok(node_path);
+        }
+    }
+
+    Err("npm 包中未找到 node 可执行文件".to_string())
 }

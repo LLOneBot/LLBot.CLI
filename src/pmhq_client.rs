@@ -149,6 +149,12 @@ impl PMHQClient {
         Ok(())
     }
 
+    /// 获取 QQ 进程的 PID
+    pub fn get_qq_pid(&self) -> Option<u32> {
+        let result = self.call("getProcessInfo").ok()?;
+        result.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32)
+    }
+
     /// 启动 SSE 监听，处理二维码和登录事件
     pub fn start_sse_listener<F>(&self, logged_in: Arc<AtomicBool>, mut on_qrcode: F)
     where

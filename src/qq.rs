@@ -190,46 +190,31 @@ fn download_and_install_qq() -> bool {
     false
 }
 
-/// 检测 QQ 进程是否正在运行
+/// 检测指定 PID 的进程是否存在
 #[cfg(target_os = "windows")]
-pub fn is_qq_running() -> bool {
+pub fn is_process_running(pid: u32) -> bool {
     use std::process::Command;
 
     match Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq QQ.exe", "/NH"])
+        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
         .output()
     {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.contains("QQ.exe")
+            stdout.contains(&pid.to_string())
         }
         Err(_) => false,
     }
 }
 
-#[cfg(target_os = "macos")]
-pub fn is_qq_running() -> bool {
+#[cfg(not(target_os = "windows"))]
+pub fn is_process_running(pid: u32) -> bool {
     use std::process::Command;
 
-    match Command::new("pgrep").args(["-x", "QQ"]).output() {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub fn is_qq_running() -> bool {
-    use std::process::Command;
-
-    // Linux 上尝试检测 QQ 相关进程
-    match Command::new("pgrep").args(["-f", "qq"]).output() {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-pub fn is_qq_running() -> bool {
-    // 其他平台默认返回 true，不触发退出
-    true
+    // Unix 使用 kill -0 检测进程是否存在（不会真的发送信号）
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
