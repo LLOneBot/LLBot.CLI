@@ -21,6 +21,7 @@ use std::time::Duration;
 
 const DEFAULT_PORT: u16 = 13000;
 const PORT_RANGE_END: u16 = 14000;
+const QQ_EXIT_BUFFER_SECS: u64 = 15;
 
 fn main() {
     let exe_dir = env::current_exe()
@@ -51,8 +52,13 @@ fn main() {
         }
     };
 
-    // --help 直接转发给 pmhq
+    // --help 先输出 CLI 专用参数，再转发给 pmhq
     if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("llbot-cli {}", env!("CARGO_PKG_VERSION"));
+        println!();
+        println!("CLI 专用参数:");
+        println!("  --no-exit-with-qq    禁用 QQ 退出时自动退出（默认启用，有 15 秒缓冲）");
+        println!();
         let status = Command::new(&pmhq_exe).args(&args).status();
         std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
     }
@@ -63,6 +69,16 @@ fn main() {
         let status = Command::new(&pmhq_exe).args(&args).status();
         std::process::exit(status.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
     }
+
+    // 解析 --exit-with-qq / --no-exit-with-qq 参数（默认启用）
+    let exit_with_qq = !args.iter().any(|a| a == "--no-exit-with-qq");
+
+    // 过滤掉 CLI 专用参数，不传递给 pmhq
+    let pmhq_args: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--exit-with-qq" && *a != "--no-exit-with-qq")
+        .cloned()
+        .collect();
 
     // 检查 QQ 路径
     let detected_qq_path = qq::detect_qq_path(&exe_dir, &args);
@@ -115,15 +131,15 @@ fn main() {
 
     let mut cmd = Command::new(&pmhq_exe);
     cmd.arg("--port").arg(port.to_string());
-    
+
     // 如果检测到 QQ 路径，传递给 pmhq
     if let Some(ref qq_path) = detected_qq_path {
         println!("检测到 QQ 路径: {}", qq_path);
         cmd.arg(format!("--qq-path={}", qq_path));
     }
-    
-    if !args.is_empty() {
-        cmd.args(&args);
+
+    if !pmhq_args.is_empty() {
+        cmd.args(&pmhq_args);
     }
     
     cmd.arg("--sub-cmd-workdir")
@@ -223,9 +239,48 @@ fn main() {
 
     let logged_in = Arc::new(AtomicBool::new(false));
     let qrcode_path = exe_dir.join("qrcode.png");
-    let show_terminal_qr = util::should_show_terminal_qrcode(&exe_dir, &args);
+    let show_terminal_qr = util::should_show_terminal_qrcode(&exe_dir, &pmhq_args);
 
     login::start_login_listener(port, logged_in.clone(), qrcode_path, show_terminal_qr);
+
+    // 启动 QQ 进程监控（如果启用）
+    if exit_with_qq {
+        let child_for_qq_monitor = child_arc.clone();
+        thread::spawn(move || {
+            // 等待 QQ 进程启动
+            println!("等待 QQ 进程启动...");
+            loop {
+                if qq::is_qq_running() {
+                    println!("QQ 进程已启动，开始监控");
+                    break;
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+
+            loop {
+                thread::sleep(Duration::from_secs(2));
+
+                if !qq::is_qq_running() {
+                    println!("\n检测到 QQ 进程已退出，{}秒后将退出所有进程...", QQ_EXIT_BUFFER_SECS);
+                    thread::sleep(Duration::from_secs(QQ_EXIT_BUFFER_SECS));
+
+                    // 再次检查 QQ 是否恢复
+                    if qq::is_qq_running() {
+                        println!("QQ 进程已恢复，继续运行");
+                        continue;
+                    }
+
+                    println!("正在退出所有进程...");
+                    if let Ok(mut guard) = child_for_qq_monitor.lock() {
+                        if let Some(ref mut c) = *guard {
+                            let _ = c.kill();
+                        }
+                    }
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
 
     // 等待子进程结束
     loop {

@@ -37,6 +37,7 @@ bin/
 | `--work-dir=<path>` | 工作目录|
 | `--sub-cmd <cmd...>` | QQ 启动后执行的子命令（必须放在最后） |
 | `--sub-cmd-workdir=<path>` | 子命令工作目录（默认使用 --work-dir） |
+| `--no-exit-with-qq` | 禁用 QQ 退出时自动退出（默认启用，有 15 秒缓冲） |
 | `--update` | 检查并执行更新 |
 | `--help, -h` | 显示帮助信息 |
 | `--version, -v` | 显示版本信息 |
