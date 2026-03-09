@@ -189,32 +189,3 @@ fn download_and_install_qq() -> bool {
     eprintln!("QQ 自动安装仅支持 Windows");
     false
 }
-
-/// 检测指定 PID 的进程是否存在
-#[cfg(target_os = "windows")]
-pub fn is_process_running(pid: u32) -> bool {
-    use std::process::Command;
-
-    match Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-        .output()
-    {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.contains(&pid.to_string())
-        }
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn is_process_running(pid: u32) -> bool {
-    use std::process::Command;
-
-    // Unix 使用 kill -0 检测进程是否存在（不会真的发送信号）
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
