@@ -348,7 +348,7 @@ fn main() {
     }
 
     // 等待子进程结束
-    loop {
+    let pmhq_exit_status = loop {
         thread::sleep(Duration::from_millis(100));
         if let Ok(mut guard) = child_for_wait.lock() {
             if let Some(ref mut c) = *guard {
@@ -357,18 +357,36 @@ fn main() {
                         if !status.success() {
                             eprintln!("pmhq 退出，状态码: {:?}", status.code());
                         }
-                        break;
+                        break status.code();
                     }
                     Ok(None) => {}
                     Err(e) => {
                         eprintln!("等待 pmhq 失败: {}", e);
-                        break;
+                        break None;
                     }
                 }
             } else {
-                break;
+                break None;
+            }
+        }
+    };
+
+    // pmhq 退出后，如果启用了 QQ 退出监控且有缓冲时间，等待后再退出
+    // （pmhq 自身会在 QQ 退出时退出，此时 CLI 的监控线程来不及执行延迟逻辑）
+    if exit_with_qq && qq_exit_delay > 0 {
+        println!("[监控] pmhq 已退出，等待 {} 秒后退出...", qq_exit_delay);
+        let _ = std::io::stdout().flush();
+
+        for i in 0..qq_exit_delay {
+            thread::sleep(Duration::from_secs(1));
+
+            let remaining = qq_exit_delay - i - 1;
+            if remaining > 0 && remaining % 5 == 0 {
+                println!("[监控] 还有 {} 秒退出...", remaining);
             }
         }
     }
+
+    std::process::exit(pmhq_exit_status.unwrap_or(1));
 }
 
