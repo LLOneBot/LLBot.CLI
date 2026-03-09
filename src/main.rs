@@ -135,7 +135,9 @@ fn main() {
         cmd.args(&args);
     }
     
-    cmd.arg("--sub-cmd-workdir")
+    cmd.arg("--exit-with-qq-delay")
+        .arg("15")
+        .arg("--sub-cmd-workdir")
         .arg(&llbot_dir)
         .arg("--sub-cmd")
         .arg(&node_path)
