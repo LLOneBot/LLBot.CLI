@@ -123,6 +123,7 @@ fn main() {
     println!();
 
     let mut cmd = Command::new(&pmhq_exe);
+    cmd.env("NODE_SKIP_PLATFORM_CHECK", "1");
     cmd.arg("--port").arg(port.to_string());
 
     // 如果检测到 QQ 路径，传递给 pmhq
