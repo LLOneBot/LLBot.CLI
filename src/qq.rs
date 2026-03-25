@@ -164,6 +164,9 @@ fn download_and_install_qq() -> bool {
             }
             println!();
 
+            // 显式关闭文件句柄，否则启动安装程序时会因文件被占用导致 os error 32
+            drop(file);
+
             println!("正在安装 QQ（静默安装）...");
             match std::process::Command::new(&temp_file).arg("/S").status() {
                 Ok(status) => {
