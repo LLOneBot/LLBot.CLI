@@ -59,7 +59,7 @@ fn get_platform_info() -> (&'static str, &'static str) {
     let os_name = match OS {
         "windows" => "win",
         "linux" => "linux",
-        "macos" => "darwin",
+        "macos" => "macos",
         _ => OS,
     };
     
