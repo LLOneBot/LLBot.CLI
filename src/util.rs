@@ -1,4 +1,3 @@
-use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -88,27 +87,6 @@ pub fn find_usable_node(exe_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn should_show_terminal_qrcode(exe_dir: &Path, args: &[String]) -> bool {
-    if cfg!(not(target_os = "windows")) {
-        return true;
-    }
-
-    if args.iter().any(|a| a == "--headless") {
-        return true;
-    }
-
-    let config_path = exe_dir.join("bin/pmhq/pmhq_config.json");
-    if let Ok(content) = fs::read_to_string(&config_path) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            return json
-                .get("headless")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-        }
-    }
-    false
-}
-
 pub fn get_exe_name(base: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{}.exe", base)
@@ -162,6 +140,18 @@ pub fn find_available_port(start: u16, end: u16) -> Option<u16> {
         }
     }
     None
+}
+
+/// 读取 Auth Token (bin/llbot/data/auth_token.txt); 文件不存在或内容为空返回 None
+pub fn read_auth_token(exe_dir: &Path) -> Option<String> {
+    let path = exe_dir.join("bin/llbot/data/auth_token.txt");
+    let content = std::fs::read_to_string(path).ok()?;
+    let token = content.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
 }
 
 pub fn wait_exit(code: i32) -> ! {

@@ -460,12 +460,13 @@ pub fn prompt_yes_no(prompt: &str) -> bool {
 ///
 /// - 仅在检测到缺失时才会联网下载
 /// - 不做交互式确认
-pub fn ensure_required_components(exe_dir: &Path) -> Result<(), String> {
+/// - headless 模式不需要 pmhq (LLBot 直连 QQ 协议), 跳过其下载
+pub fn ensure_required_components(exe_dir: &Path, headless: bool) -> Result<(), String> {
     let packages = ComponentPackages::for_current_platform();
     let mut changed = false;
 
-    // pmhq
-    if util::find_pmhq_exe(exe_dir).is_none() {
+    // pmhq (仅非 headless 需要)
+    if !headless && util::find_pmhq_exe(exe_dir).is_none() {
         println!("检测到 PMHQ 未安装，正在自动下载...");
         let info = fetch_package_info(&packages.pmhq_package)?;
         let url = get_tarball_url(&packages.pmhq_package, &info.version);
