@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::util;
 
 const QQ_DOWNLOAD_URL: &str =
-    "https://dldir1v6.qq.com/qqfile/qq/QQNT/c50d6326/QQ9.9.22.40768_x64.exe";
+    "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.33/beta/8cf72bb8/QQ9.9.33.51552_x64.exe";
 
 pub fn detect_qq_path(exe_dir: &Path, args: &[String]) -> Option<String> {
     if !cfg!(any(target_os = "windows", target_os = "macos")) {
