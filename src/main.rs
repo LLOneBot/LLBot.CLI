@@ -19,10 +19,18 @@ use std::time::Duration;
 const DEFAULT_PORT: u16 = 13000;
 const PORT_RANGE_END: u16 = 14000;
 
-// 从参数里取 --qq=<uin> (快速登录号), 没有返回 None.
+// 从参数里取快速登录号, 支持 --qq=<uin> 和 --qq <uin> 两种形式, 没有返回 None.
 fn extract_qq_uin(args: &[String]) -> Option<String> {
-    args.iter()
-        .find_map(|a| a.strip_prefix("--qq=").map(|s| s.to_string()))
+    for (i, a) in args.iter().enumerate() {
+        if let Some(v) = a.strip_prefix("--qq=") {
+            return Some(v.to_string());
+        }
+        // 空格形式: --qq 后面紧跟的一个参数是 uin (精确匹配 "--qq", 不会误吃 --qq-path)
+        if a == "--qq" {
+            return args.get(i + 1).cloned();
+        }
+    }
+    None
 }
 
 fn print_help() {
@@ -166,11 +174,16 @@ fn main() {
         cmd.env("NODE_SKIP_PLATFORM_CHECK", "1");
         #[cfg(target_os = "windows")]
         cmd.env("LL_IPC_PIPE", &ipc_pipe_name);
-        cmd.arg("--enable-source-maps").arg("llbot.js");
-        // 透传快速登录 QQ 号
+        cmd.arg("--disable-warning=ExperimentalWarning")
+            .arg("--enable-source-maps")
+            .arg("llbot.js");
+        // 透传快速登录 QQ 号. 注意: 直接起 node 时脚本参数不能加 "--" 分隔符,
+        // 否则 node 会把 "--" 连同后面的参数一起塞进 process.argv, llbot.js 的
+        // parseArgs 会把 --qq=xxx 当成 positional 而非 option (PMHQ 模式的 "--"
+        // 是 pmhq 的语法, 会被 pmhq 消费掉, 不会漏到 node).
         if let Some(uin) = extract_qq_uin(&args) {
             println!("快速登录 QQ: {}", uin);
-            cmd.arg("--").arg(format!("--qq={}", uin));
+            cmd.arg(format!("--qq={}", uin));
         }
         (cmd, "LLBot")
     } else {
@@ -196,9 +209,6 @@ fn main() {
 
         let mut cmd = Command::new(&pmhq_exe);
         cmd.env("NODE_SKIP_PLATFORM_CHECK", "1");
-        // 告诉 LLBot 走 PMHQ 中继 (而非直连): 与下面的 --pmhq-port 成对出现.
-        // 经 pmhq 透传给 node/llbot 孙进程 (同 NODE_SKIP_PLATFORM_CHECK 的透传方式).
-        cmd.env("QQ_USE_PMHQ", "1");
         cmd.arg("--port").arg(port.to_string());
         cmd.arg(format!("--auth-token={}", auth_token));
 
@@ -224,6 +234,7 @@ fn main() {
             .arg(&llbot_dir)
             .arg("--sub-cmd")
             .arg(&node_path)
+            .arg("--disable-warning=ExperimentalWarning")
             .arg("--enable-source-maps")
             .arg("llbot.js")
             .arg("--")
